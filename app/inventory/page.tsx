@@ -68,6 +68,7 @@ export default function InventoryPage() {
         .from('categories')
         .select('*')
         .eq('property_id', prop.id)
+        .order('name')
 
       setCategories(cats ?? [])
 
@@ -108,47 +109,27 @@ export default function InventoryPage() {
     return data.publicUrl
   }
 
-  const ensureCategoryExists = async (categoryName: string) => {
-    if (!property || !categoryName) return
-
-    const existing = categories.find(
-      c => c.name.toLowerCase() === categoryName.toLowerCase()
-    )
-
-    if (existing) return
-
-    const { data } = await supabase
-      .from('categories')
-      .insert([
-        {
-          property_id: property.id,
-          name: categoryName
-        }
-      ])
-      .select()
-      .single()
-
-    if (data) {
-      setCategories(prev => [...prev, data])
-    }
-  }
-
   const createItem = async (item: Partial<ItemRow>) => {
-    if (!property || !item.name || !item.location_id) {
-      alert('Must select a non-root location.')
+    if (!property) return
+
+    if (!item.location_id) {
+      alert('Inventory cannot be added at the root level.')
       return
     }
 
-    await ensureCategoryExists(item.category ?? '')
+    if (!item.category) {
+      alert('Please select a valid category from Settings.')
+      return
+    }
 
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('items')
       .insert([
         {
           property_id: property.id,
           location_id: item.location_id,
           name: item.name,
-          category: item.category ?? null,
+          category: item.category,
           quantity: item.quantity ?? 1,
           purchase_price: item.purchase_price ?? null,
           vendor: item.vendor ?? null,
@@ -159,6 +140,11 @@ export default function InventoryPage() {
       .select()
       .single()
 
+    if (error) {
+      alert(error.message)
+      return
+    }
+
     setItems(prev => [data as ItemRow, ...prev])
     setCreating(false)
   }
@@ -166,12 +152,20 @@ export default function InventoryPage() {
   const saveItem = async () => {
     if (!editingItem) return
 
-    await ensureCategoryExists(editingItem.category ?? '')
+    if (!editingItem.category) {
+      alert('Category must exist in Settings.')
+      return
+    }
 
-    await supabase
+    const { error } = await supabase
       .from('items')
       .update(editingItem)
       .eq('id', editingItem.id)
+
+    if (error) {
+      alert(error.message)
+      return
+    }
 
     setItems(prev =>
       prev.map(i => (i.id === editingItem.id ? editingItem : i))
@@ -218,8 +212,8 @@ export default function InventoryPage() {
 
       {creating && (
         <ItemModal
-          locations={validLocations}
           categories={categories}
+          locations={validLocations}
           createItem={createItem}
           cancel={() => setCreating(false)}
         />
@@ -227,10 +221,9 @@ export default function InventoryPage() {
 
       {editingItem && (
         <ItemModal
-          locations={validLocations}
-          categories={categories}
           item={editingItem}
-          setItem={setEditingItem}
+          categories={categories}
+          locations={validLocations}
           saveItem={saveItem}
           uploadPhoto={uploadPhoto}
           cancel={() => setEditingItem(null)}
@@ -277,18 +270,16 @@ function ItemModal(props: any) {
           placeholder="Name"
         />
 
-        <input
-          list="categories"
+        <select
           className="border p-2 rounded w-full"
           value={form.category ?? ''}
           onChange={e => setForm({ ...form, category: e.target.value })}
-          placeholder="Category"
-        />
-        <datalist id="categories">
+        >
+          <option value="">Select Category</option>
           {props.categories.map((c: any) => (
-            <option key={c.id} value={c.name} />
+            <option key={c.id} value={c.name}>{c.name}</option>
           ))}
-        </datalist>
+        </select>
 
         <input
           type="number"
