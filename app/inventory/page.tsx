@@ -95,6 +95,19 @@ export default function InventoryPage() {
     setItems(prev => prev.filter(i => i.id !== id))
   }
 
+  const saveItem = async (updated: ItemRow) => {
+    await supabase
+      .from('items')
+      .update(updated)
+      .eq('id', updated.id)
+
+    setItems(prev =>
+      prev.map(i => (i.id === updated.id ? updated : i))
+    )
+
+    setEditingItem(null)
+  }
+
   if (!property)
     return <div className="p-8">Loading...</div>
 
@@ -136,7 +149,7 @@ export default function InventoryPage() {
               className="bg-white rounded-xl shadow-md p-4 flex gap-4 hover:shadow-lg transition cursor-pointer"
               onClick={() => setEditingItem(item)}
             >
-              {/* LEFT IMAGE */}
+              {/* IMAGE THUMBNAIL */}
               <div
                 className="w-28 h-28 rounded-lg overflow-hidden border bg-slate-100 relative group flex-shrink-0"
                 onClick={(e) => {
@@ -161,13 +174,9 @@ export default function InventoryPage() {
                     Manage Photos
                   </span>
                 </div>
-
-                <div className="absolute top-2 right-2 bg-indigo-600 text-white text-xs px-2 py-1 rounded-full">
-                  📷
-                </div>
               </div>
 
-              {/* RIGHT DETAILS */}
+              {/* DETAILS */}
               <div className="flex-1">
                 <div className="text-lg font-semibold">
                   {item.name}
@@ -213,46 +222,138 @@ export default function InventoryPage() {
         </div>
       )}
 
-      {/* Edit Modal Placeholder */}
+      {/* FULL EDIT MODAL */}
       {editingItem && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
-          <div className="bg-white p-6 rounded-xl w-[600px]">
-            <h2 className="text-xl font-semibold mb-4">
-              Edit Item
-            </h2>
-            <div>{editingItem.name}</div>
-            <div className="mt-4 flex justify-end">
-              <button
-                onClick={() => setEditingItem(null)}
-                className="bg-indigo-600 text-white px-4 py-2 rounded"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+        <EditModal
+          item={editingItem}
+          onClose={() => setEditingItem(null)}
+          onSave={saveItem}
+        />
       )}
 
-      {/* Photo Modal Placeholder */}
+      {/* PHOTO MANAGER MODAL */}
       {photoItem && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
-          <div className="bg-white p-6 rounded-xl w-[600px]">
-            <h2 className="text-xl font-semibold mb-4">
-              Manage Photos
-            </h2>
-            <div>{photoItem.name}</div>
-            <div className="mt-4 flex justify-end">
-              <button
-                onClick={() => setPhotoItem(null)}
-                className="bg-indigo-600 text-white px-4 py-2 rounded"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+        <PhotoModal
+          item={photoItem}
+          onClose={() => setPhotoItem(null)}
+        />
       )}
     </main>
+  )
+}
+
+function EditModal({
+  item,
+  onClose,
+  onSave,
+}: {
+  item: ItemRow
+  onClose: () => void
+  onSave: (i: ItemRow) => void
+}) {
+  const [form, setForm] = useState(item)
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
+      <div className="bg-white p-6 rounded-xl w-[600px] space-y-4">
+        <h2 className="text-xl font-semibold">
+          Edit Inventory Item
+        </h2>
+
+        <input
+          className="border p-2 rounded w-full"
+          value={form.name}
+          onChange={(e) =>
+            setForm({ ...form, name: e.target.value })
+          }
+          placeholder="Item Name"
+        />
+
+        <input
+          className="border p-2 rounded w-full"
+          value={form.category ?? ''}
+          onChange={(e) =>
+            setForm({ ...form, category: e.target.value })
+          }
+          placeholder="Category"
+        />
+
+        <input
+          className="border p-2 rounded w-full"
+          value={form.vendor ?? ''}
+          onChange={(e) =>
+            setForm({ ...form, vendor: e.target.value })
+          }
+          placeholder="Vendor"
+        />
+
+        <input
+          type="number"
+          className="border p-2 rounded w-full"
+          value={form.purchase_price ?? ''}
+          onChange={(e) =>
+            setForm({
+              ...form,
+              purchase_price: parseFloat(e.target.value),
+            })
+          }
+          placeholder="Purchase Price"
+        />
+
+        <textarea
+          className="border p-2 rounded w-full"
+          value={form.notes ?? ''}
+          onChange={(e) =>
+            setForm({ ...form, notes: e.target.value })
+          }
+          placeholder="Notes"
+        />
+
+        <div className="flex justify-end gap-3">
+          <button
+            onClick={onClose}
+            className="text-slate-600"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onSave(form)}
+            className="bg-indigo-600 text-white px-4 py-2 rounded"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PhotoModal({
+  item,
+  onClose,
+}: {
+  item: ItemRow
+  onClose: () => void
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
+      <div className="bg-white p-6 rounded-xl w-[600px] space-y-4">
+        <h2 className="text-xl font-semibold">
+          Photo Manager
+        </h2>
+
+        <div className="text-slate-600">
+          Multi-photo gallery will go here next.
+        </div>
+
+        <button
+          onClick={onClose}
+          className="bg-indigo-600 text-white px-4 py-2 rounded"
+        >
+          Close
+        </button>
+      </div>
+    </div>
   )
 }
 
