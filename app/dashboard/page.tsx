@@ -46,11 +46,12 @@ export default function DashboardPage() {
         .select('*')
         .eq('property_id', prop.id)
 
-      setLocations(locs ?? [])
+      const locList = (locs ?? []) as LocationRow[]
+      setLocations(locList)
 
-      // Auto-expand all root nodes on load
+      // auto-expand root nodes
       const rootExpanded: Record<string, boolean> = {}
-      ;(locs ?? []).forEach(l => {
+      locList.forEach(l => {
         if (l.parent_id === null) rootExpanded[l.id] = true
       })
       setExpanded(rootExpanded)
@@ -67,6 +68,11 @@ export default function DashboardPage() {
       arr.push(loc)
       map.set(key, arr)
     }
+    // sort for stable display
+    for (const [k, arr] of map.entries()) {
+      arr.sort((a, b) => a.name.localeCompare(b.name))
+      map.set(k, arr)
+    }
     return map
   }, [locations])
 
@@ -77,7 +83,7 @@ export default function DashboardPage() {
   const createLocation = async () => {
     if (!property || !newName.trim()) return
 
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('locations')
       .insert([
         {
@@ -89,39 +95,58 @@ export default function DashboardPage() {
       .select()
       .single()
 
+    if (error) {
+      alert(error.message)
+      return
+    }
+
     if (data) {
-      setLocations(prev => [...prev, data])
+      const row = data as LocationRow
+      setLocations(prev => [...prev, row])
       setNewName('')
       setNewParentId(null)
 
-      // Expand parent automatically
-      if (data.parent_id) {
-        setExpanded(prev => ({ ...prev, [data.parent_id!]: true }))
-      } else {
-        setExpanded(prev => ({ ...prev, [data.id]: true }))
-      }
+      // expand parent to show new child, or expand new root
+      if (row.parent_id) setExpanded(prev => ({ ...prev, [row.parent_id!]: true }))
+      else setExpanded(prev => ({ ...prev, [row.id]: true }))
     }
   }
 
   const deleteLocation = async (id: string) => {
     const hasChildren = locations.some(l => l.parent_id === id)
     if (hasChildren) {
-      alert('Cannot delete location with children.')
+      alert('Cannot delete a location that has children. Move/delete children first.')
       return
     }
 
-    await supabase.from('locations').delete().eq('id', id)
+    const ok = confirm('Delete this location?')
+    if (!ok) return
+
+    const { error } = await supabase.from('locations').delete().eq('id', id)
+    if (error) {
+      alert(error.message)
+      return
+    }
+
     setLocations(prev => prev.filter(l => l.id !== id))
+    setExpanded(prev => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
   }
 
   const renameLocation = async (id: string, current: string) => {
     const newLabel = prompt('Rename location:', current)
-    if (!newLabel) return
+    if (!newLabel || !newLabel.trim()) return
 
-    await supabase.from('locations').update({ name: newLabel }).eq('id', id)
-    setLocations(prev =>
-      prev.map(l => (l.id === id ? { ...l, name: newLabel } : l))
-    )
+    const { error } = await supabase.from('locations').update({ name: newLabel.trim() }).eq('id', id)
+    if (error) {
+      alert(error.message)
+      return
+    }
+
+    setLocations(prev => prev.map(l => (l.id === id ? { ...l, name: newLabel.trim() } : l)))
   }
 
   const onDragEnd = async (event: DragEndEvent) => {
@@ -129,59 +154,40 @@ export default function DashboardPage() {
     const overId = event.over?.id ? String(event.over.id) : null
     if (!overId) return
 
-    const newParentId = overId === 'root' ? null : overId
-    if (draggedId === newParentId) return
+    const newParent = overId === 'root' ? null : overId
+    if (draggedId === newParent) return
 
-    await supabase
-      .from('locations')
-      .update({ parent_id: newParentId })
-      .eq('id', draggedId)
-
-    setLocations(prev =>
-      prev.map(l =>
-        l.id === draggedId ? { ...l, parent_id: newParentId } : l
-      )
-    )
-
-    // Expand new parent automatically
-    if (newParentId) {
-      setExpanded(prev => ({ ...prev, [newParentId]: true }))
+    const { error } = await supabase.from('locations').update({ parent_id: newParent }).eq('id', draggedId)
+    if (error) {
+      alert(error.message)
+      return
     }
+
+    setLocations(prev => prev.map(l => (l.id === draggedId ? { ...l, parent_id: newParent } : l)))
+
+    // expand the new parent so user can see it
+    if (newParent) setExpanded(prev => ({ ...prev, [newParent]: true }))
   }
 
   const renderTree = (parent: string | null, level = 0) => {
     const nodes = childrenByParent.get(parent) ?? []
 
     return nodes.map(loc => {
-      const children = childrenByParent.get(loc.id) ?? []
-      const hasChildren = children.length > 0
+      const kids = childrenByParent.get(loc.id) ?? []
+      const hasChildren = kids.length > 0
 
       return (
         <div key={loc.id} style={{ marginLeft: level * 18 }}>
           <DropZone id={loc.id}>
-            <Draggable id={loc.id}>
-              <div className="flex items-center justify-between border rounded p-2 bg-white">
-                <div className="flex items-center gap-2">
-                  {hasChildren ? (
-                    <button onClick={() => toggleExpanded(loc.id)}>
-                      {expanded[loc.id] ? '▾' : '▸'}
-                    </button>
-                  ) : (
-                    <span>•</span>
-                  )}
-                  <span>{loc.name}</span>
-                </div>
-
-                <div className="flex gap-2 text-sm">
-                  <button onClick={() => renameLocation(loc.id, loc.name)} className="text-blue-600">
-                    Rename
-                  </button>
-                  <button onClick={() => deleteLocation(loc.id)} className="text-red-600">
-                    Delete
-                  </button>
-                </div>
-              </div>
-            </Draggable>
+            <Row
+              id={loc.id}
+              name={loc.name}
+              hasChildren={hasChildren}
+              expanded={!!expanded[loc.id]}
+              onToggle={() => toggleExpanded(loc.id)}
+              onRename={() => renameLocation(loc.id, loc.name)}
+              onDelete={() => deleteLocation(loc.id)}
+            />
           </DropZone>
 
           {hasChildren && expanded[loc.id] && renderTree(loc.id, level + 1)}
@@ -211,6 +217,7 @@ export default function DashboardPage() {
             value={newName}
             onChange={e => setNewName(e.target.value)}
           />
+
           <select
             className="border p-2 rounded"
             value={newParentId || ''}
@@ -223,6 +230,7 @@ export default function DashboardPage() {
               </option>
             ))}
           </select>
+
           <button onClick={createLocation} className="bg-indigo-600 text-white px-4 rounded">
             Add
           </button>
@@ -255,30 +263,97 @@ function TopNav() {
   )
 }
 
-function Draggable({ id, children }: any) {
-  const { attributes, listeners, setNodeRef, transform } = useDraggable({ id })
-  const style = {
-    transform: transform
-      ? `translate3d(${transform.x}px, ${transform.y}px, 0)`
-      : undefined
-  }
-
+function DropZone({ id, children }: any) {
+  const { setNodeRef, isOver } = useDroppable({ id })
   return (
-    <div ref={setNodeRef} style={style} {...listeners} {...attributes}>
+    <div ref={setNodeRef} className={isOver ? 'bg-indigo-50 rounded' : ''}>
       {children}
     </div>
   )
 }
 
-function DropZone({ id, children }: any) {
-  const { setNodeRef, isOver } = useDroppable({ id })
+function DragHandle({ id }: { id: string }) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id })
+  const style: React.CSSProperties = {
+    transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
+    opacity: isDragging ? 0.6 : 1
+  }
 
   return (
     <div
       ref={setNodeRef}
-      className={isOver ? 'bg-indigo-50 rounded' : ''}
+      style={style}
+      {...listeners}
+      {...attributes}
+      className="select-none cursor-grab px-2 text-slate-500"
+      title="Drag to move"
+      onClick={(e) => {
+        // prevent accidental clicks doing anything
+        e.preventDefault()
+        e.stopPropagation()
+      }}
     >
-      {children}
+      ⠿
+    </div>
+  )
+}
+
+function Row(props: {
+  id: string
+  name: string
+  hasChildren: boolean
+  expanded: boolean
+  onToggle: () => void
+  onRename: () => void
+  onDelete: () => void
+}) {
+  return (
+    <div className="flex items-center justify-between border rounded p-2 bg-white">
+      <div className="flex items-center gap-2">
+        <DragHandle id={props.id} />
+
+        {props.hasChildren ? (
+          <button
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              props.onToggle()
+            }}
+            className="w-6 text-slate-600"
+            title={props.expanded ? 'Collapse' : 'Expand'}
+          >
+            {props.expanded ? '▾' : '▸'}
+          </button>
+        ) : (
+          <span className="w-6 text-slate-400">•</span>
+        )}
+
+        <span>{props.name}</span>
+      </div>
+
+      <div className="flex gap-2 text-sm">
+        <button
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            props.onRename()
+          }}
+          className="text-blue-600"
+        >
+          Rename
+        </button>
+
+        <button
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            props.onDelete()
+          }}
+          className="text-red-600"
+        >
+          Delete
+        </button>
+      </div>
     </div>
   )
 }
