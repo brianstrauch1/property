@@ -15,13 +15,6 @@ type LocationRow = {
   property_id?: string
 }
 
-type CtxMenu = {
-  open: boolean
-  x: number
-  y: number
-  locationId: string | null
-}
-
 export default function InventoryPage() {
   const supabase = supabaseBrowser()
   const router = useRouter()
@@ -30,7 +23,6 @@ export default function InventoryPage() {
   const [property, setProperty] = useState<any>(null)
   const [locations, setLocations] = useState<LocationRow[]>([])
   const [items, setItems] = useState<InventoryItem[]>([])
-
   const [selected, setSelected] = useState<string[]>([])
   const [expanded, setExpanded] = useState<string[]>([])
   const [inventoryCollapsed, setInventoryCollapsed] = useState(false)
@@ -40,84 +32,122 @@ export default function InventoryPage() {
 
   const [search, setSearch] = useState('')
 
-  // inline rename (wired for future; context menu actions can use these later)
-  const [renamingId, setRenamingId] = useState<string | null>(null)
-  const [renameValue, setRenameValue] = useState<string>('')
-
-  // context menu shell (wired for future; not required for debug)
-  const [ctx, setCtx] = useState<CtxMenu>({ open: false, x: 0, y: 0, locationId: null })
-
-  // debug text
+  // debug
   const [debug, setDebug] = useState<string>('Initializing…')
 
-  /* ---------------- INIT ---------------- */
+  /* ---------------- helpers ---------------- */
+
+  const loadProperty = async () => {
+    const { data: prop, error: propErr } = await supabase
+      .from('properties')
+      .select('*')
+      .limit(1)
+      .single()
+
+    if (propErr) throw new Error(`properties error: ${propErr.message}`)
+    if (!prop) throw new Error('No property returned.')
+
+    setProperty(prop)
+    return prop
+  }
+
+  const loadData = async (propId: string, reason: string) => {
+    setDebug(prev => `${prev}\nReload (${reason})…`)
+
+    const { data: locs, error: locErr } = await supabase
+      .from('locations')
+      .select('*')
+      .eq('property_id', propId)
+      .order('sort_order', { ascending: true })
+
+    if (locErr) {
+      setDebug(prev => `${prev}\nlocations error: ${locErr.message}`)
+      setLocations([])
+    } else {
+      setLocations(locs ?? [])
+      setDebug(prev => `${prev}\nlocations rows: ${(locs ?? []).length}`)
+    }
+
+    const { data: its, error: itemsErr } = await supabase
+      .from('items')
+      .select('*')
+      .eq('property_id', propId)
+
+    if (itemsErr) {
+      setDebug(prev => `${prev}\nitems error: ${itemsErr.message}`)
+      setItems([])
+    } else {
+      setItems(its ?? [])
+      setDebug(prev => `${prev}\nitems rows: ${(its ?? []).length}`)
+    }
+  }
+
+  /* ---------------- INIT (session-safe) ---------------- */
 
   useEffect(() => {
-    const init = async () => {
+    const run = async () => {
       try {
         setDebug('Initializing…')
 
-        const { data: userData, error: userErr } = await supabase.auth.getUser()
-        if (userErr) {
-          setDebug(`auth.getUser error: ${userErr.message}`)
-        }
+        // Wait for a real session (this is the key change)
+        const { data: sess } = await supabase.auth.getSession()
+        const session = sess.session
 
-        if (!userData?.user) {
-          setDebug('No authenticated user. Redirecting to /')
-          router.push('/')
+        if (!session?.access_token) {
+          setDebug('No session yet. Waiting for auth state change…')
+          // Don't redirect—user may already be logged in but session not hydrated yet.
           return
         }
 
-        setDebug(prev => `${prev}\nUser: ${userData.user.id}`)
+        setDebug(prev => `${prev}\nSession: YES | User: ${session.user.id}`)
 
-        const { data: prop, error: propErr } = await supabase
-          .from('properties')
-          .select('*')
-          .limit(1)
-          .single()
-
-        if (propErr) {
-          setDebug(prev => `${prev}\nproperties error: ${propErr.message}`)
-          return
-        }
-
-        if (!prop) {
-          setDebug(prev => `${prev}\nNo property returned.`)
-          return
-        }
-
-        setProperty(prop)
+        const prop = await loadProperty()
         setDebug(prev => `${prev}\nProperty: ${prop.id}`)
-
-        const { data: locs, error: locErr } = await supabase
-          .from('locations')
-          .select('*')
-          .eq('property_id', prop.id)
-          .order('sort_order', { ascending: true })
-
-        if (locErr) setDebug(prev => `${prev}\nlocations error: ${locErr.message}`)
-        setLocations(locs ?? [])
-        setDebug(prev => `${prev}\nlocations rows: ${(locs ?? []).length}`)
-
-        const { data: its, error: itemsErr } = await supabase
-          .from('items')
-          .select('*')
-          .eq('property_id', prop.id)
-
-        if (itemsErr) setDebug(prev => `${prev}\nitems error: ${itemsErr.message}`)
-        setItems(its ?? [])
-        setDebug(prev => `${prev}\nitems rows: ${(its ?? []).length}`)
 
         const savedExpanded = localStorage.getItem('expandedTree')
         if (savedExpanded) setExpanded(JSON.parse(savedExpanded))
 
+        await loadData(prop.id, 'initial')
         setDebug(prev => `${prev}\nLoaded.`)
       } catch (e: any) {
         setDebug(`Init exception: ${e?.message ?? String(e)}`)
       }
     }
 
-    init()
+    run()
+
+    // Subscribe to auth changes; when session becomes available, load everything
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
+      try {
+        if (!session?.access_token) return
+
+        setDebug(prev => `${prev}\nAuth event: ${event} | User: ${session.user.id}`)
+
+        // Ensure property exists
+        const prop = property ?? (await loadProperty())
+        await loadData(prop.id, `auth:${event}`)
+      } catch (e: any) {
+        setDebug(prev => `${prev}\nAuth handler error: ${e?.message ?? String(e)}`)
+      }
+    })
+
+    // Reload on tab focus (helps with hydration timing issues)
+    const onFocus = async () => {
+      try {
+        const { data: sess } = await supabase.auth.getSession()
+        if (!sess.session?.access_token) return
+        if (!property?.id) return
+        await loadData(property.id, 'focus')
+      } catch {
+        // ignore
+      }
+    }
+    window.addEventListener('focus', onFocus)
+
+    return () => {
+      sub.subscription.unsubscribe()
+      window.removeEventListener('focus', onFocus)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -125,23 +155,7 @@ export default function InventoryPage() {
     localStorage.setItem('expandedTree', JSON.stringify(expanded))
   }, [expanded])
 
-  // close context menu on click/escape/scroll (safe even if not used)
-  useEffect(() => {
-    const close = () => setCtx(prev => ({ ...prev, open: false, locationId: null }))
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close()
-    }
-    window.addEventListener('click', close)
-    window.addEventListener('scroll', close, true)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('click', close)
-      window.removeEventListener('scroll', close, true)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [])
-
-  /* ---------------- MAPS / HELPERS ---------------- */
+  /* ---------------- MAPS / TREE ---------------- */
 
   const byId = useMemo(() => {
     const m: Record<string, LocationRow> = {}
@@ -322,20 +336,14 @@ export default function InventoryPage() {
     const { error } = await supabase.from('locations').update({ parent_id: overId }).eq('id', activeId)
     if (error) return alert(error.message)
 
-    const { data } = await supabase
-      .from('locations')
-      .select('*')
-      .eq('property_id', property.id)
-      .order('sort_order', { ascending: true })
-
-    setLocations(data ?? [])
+    if (property?.id) await loadData(property.id, 'drag')
   }
 
   /* ---------------- DEBUG ACTIONS ---------------- */
 
   const testLocationsAccess = async () => {
     if (!property?.id) {
-      setDebug('No property loaded yet.')
+      setDebug(prev => `${prev}\nNo property loaded yet.`)
       return
     }
 
@@ -358,7 +366,6 @@ export default function InventoryPage() {
 
       setDebug(prev => `${prev}\nlocations count OK: ${count}`)
 
-      // also fetch one row to prove visibility
       const { data: sample, error: sampleErr } = await supabase
         .from('locations')
         .select('id,name,parent_id,property_id')
@@ -370,31 +377,12 @@ export default function InventoryPage() {
       } else {
         setDebug(prev => `${prev}\nlocations sample: ${JSON.stringify(sample)}`)
       }
+
+      // now that we know access works, force reload into state
+      await loadData(property.id, 'test-button')
     } catch (e: any) {
       setDebug(`Test exception: ${e?.message ?? String(e)}`)
     }
-  }
-
-  const createRootLocation = async () => {
-    if (!property?.id) return
-    const name = prompt('Root location name? (Example: Household)')
-    if (!name?.trim()) return
-
-    const { data, error } = await supabase
-      .from('locations')
-      .insert({
-        property_id: property.id,
-        parent_id: null,
-        name: name.trim(),
-        sort_order: 10
-      })
-      .select()
-      .single()
-
-    if (error) return alert(error.message)
-
-    setLocations(prev => [...prev, data])
-    setExpanded(prev => (prev.includes(data.id) ? prev : [...prev, data.id]))
   }
 
   /* ---------------- TREE NODE ---------------- */
@@ -507,18 +495,18 @@ export default function InventoryPage() {
             <div><b>Items loaded:</b> {items.length}</div>
 
             <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                onClick={testLocationsAccess}
-                className="text-xs bg-indigo-600 text-white px-3 py-2 rounded"
-              >
-                Test Locations Access
+              <button onClick={testLocationsAccess} className="text-xs bg-indigo-600 text-white px-3 py-2 rounded">
+                Test Locations Access (and reload)
               </button>
 
               <button
-                onClick={createRootLocation}
+                onClick={async () => {
+                  if (!property?.id) return
+                  await loadData(property.id, 'manual')
+                }}
                 className="text-xs bg-slate-800 text-white px-3 py-2 rounded"
               >
-                Create Root Location
+                Reload Data
               </button>
             </div>
           </div>
