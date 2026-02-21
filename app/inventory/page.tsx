@@ -8,7 +8,6 @@ import { supabaseBrowser } from '@/lib/supabase-browser'
 type LocationRow = {
   id: string
   name: string
-  parent_id: string | null
 }
 
 type ItemRow = {
@@ -30,16 +29,10 @@ export default function InventoryPage() {
   const [property, setProperty] = useState<any>(null)
   const [locations, setLocations] = useState<LocationRow[]>([])
   const [items, setItems] = useState<ItemRow[]>([])
+  const [editingItem, setEditingItem] = useState<ItemRow | null>(null)
 
-  const [filterLocationId, setFilterLocationId] = useState<string>('')
-
-  const [name, setName] = useState('')
-  const [category, setCategory] = useState('')
-  const [quantity, setQuantity] = useState(1)
-  const [locationId, setLocationId] = useState('')
-  const [purchasePrice, setPurchasePrice] = useState('')
-  const [vendor, setVendor] = useState('')
-  const [notes, setNotes] = useState('')
+  const [filter, setFilter] = useState('')
+  const [search, setSearch] = useState('')
 
   useEffect(() => {
     const init = async () => {
@@ -60,10 +53,10 @@ export default function InventoryPage() {
 
       const { data: locs } = await supabase
         .from('locations')
-        .select('id,name,parent_id')
+        .select('id,name')
         .eq('property_id', prop.id)
 
-      setLocations((locs ?? []) as LocationRow[])
+      setLocations(locs ?? [])
 
       const { data: its } = await supabase
         .from('items')
@@ -71,65 +64,56 @@ export default function InventoryPage() {
         .eq('property_id', prop.id)
         .order('created_at', { ascending: false })
 
-      setItems((its ?? []) as ItemRow[])
+      setItems(its ?? [])
     }
 
     init()
   }, [])
 
-  const locationNameMap = useMemo(() => {
-    const map = new Map<string, string>()
-    locations.forEach(l => map.set(l.id, l.name))
-    return map
-  }, [locations])
-
   const filteredItems = useMemo(() => {
-    if (!filterLocationId) return items
-    return items.filter(i => i.location_id === filterLocationId)
-  }, [items, filterLocationId])
+    return items.filter(item => {
+      const matchesLocation = !filter || item.location_id === filter
+      const matchesSearch =
+        !search ||
+        item.name.toLowerCase().includes(search.toLowerCase()) ||
+        (item.category?.toLowerCase().includes(search.toLowerCase()) ?? false)
 
-  const createItem = async () => {
-    if (!property || !name.trim()) return
+      return matchesLocation && matchesSearch
+    })
+  }, [items, filter, search])
 
-    const { data, error } = await supabase
+  const deleteItem = async (id: string) => {
+    if (!confirm('Delete item?')) return
+    await supabase.from('items').delete().eq('id', id)
+    setItems(prev => prev.filter(i => i.id !== id))
+  }
+
+  const saveItem = async () => {
+    if (!editingItem) return
+
+    const { error } = await supabase
       .from('items')
-      .insert([
-        {
-          property_id: property.id,
-          location_id: locationId || null,
-          name: name.trim(),
-          category: category.trim() || null,
-          quantity,
-          purchase_price: purchasePrice ? parseFloat(purchasePrice) : null,
-          vendor: vendor.trim() || null,
-          notes: notes.trim() || null
-        }
-      ])
-      .select()
-      .single()
+      .update({
+        name: editingItem.name,
+        category: editingItem.category,
+        quantity: editingItem.quantity,
+        purchase_price: editingItem.purchase_price,
+        vendor: editingItem.vendor,
+        notes: editingItem.notes,
+        location_id: editingItem.location_id
+      })
+      .eq('id', editingItem.id)
 
     if (error) {
       alert(error.message)
       return
     }
 
-    setItems(prev => [data as ItemRow, ...prev])
+    setItems(prev =>
+      prev.map(i => (i.id === editingItem.id ? editingItem : i))
+    )
 
-    setName('')
-    setCategory('')
-    setQuantity(1)
-    setLocationId('')
-    setPurchasePrice('')
-    setVendor('')
-    setNotes('')
-  }
-
-  const deleteItem = async (id: string) => {
-    const ok = confirm('Delete this item?')
-    if (!ok) return
-
-    await supabase.from('items').delete().eq('id', id)
-    setItems(prev => prev.filter(i => i.id !== id))
+    setEditingItem(null)
   }
 
   if (!property) return <div className="p-8">Loading...</div>
@@ -140,131 +124,144 @@ export default function InventoryPage() {
 
       <div className="bg-white p-6 rounded-xl shadow-md mb-6">
         <h1 className="text-2xl font-bold">Inventory</h1>
-        <p className="text-slate-600">{property.name}</p>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="bg-white p-6 rounded-xl shadow-md">
 
-        {/* Create Item */}
-        <div className="bg-white p-6 rounded-xl shadow-md">
-          <h2 className="text-xl font-semibold mb-4">Add Item</h2>
+        <div className="flex gap-4 mb-4">
+          <input
+            className="border p-2 rounded w-full"
+            placeholder="Search items..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
 
-          <div className="space-y-3">
-
-            <input
-              className="border p-2 rounded w-full"
-              placeholder="Item Name"
-              value={name}
-              onChange={e => setName(e.target.value)}
-            />
-
-            <input
-              className="border p-2 rounded w-full"
-              placeholder="Category"
-              value={category}
-              onChange={e => setCategory(e.target.value)}
-            />
-
-            <div className="flex gap-2">
-              <input
-                type="number"
-                min={1}
-                className="border p-2 rounded w-24"
-                value={quantity}
-                onChange={e => setQuantity(parseInt(e.target.value))}
-              />
-
-              <select
-                className="border p-2 rounded w-full"
-                value={locationId}
-                onChange={e => setLocationId(e.target.value)}
-              >
-                <option value="">No Location</option>
-                {locations.map(l => (
-                  <option key={l.id} value={l.id}>{l.name}</option>
-                ))}
-              </select>
-            </div>
-
-            <input
-              type="number"
-              step="0.01"
-              className="border p-2 rounded w-full"
-              placeholder="Purchase Price"
-              value={purchasePrice}
-              onChange={e => setPurchasePrice(e.target.value)}
-            />
-
-            <input
-              className="border p-2 rounded w-full"
-              placeholder="Vendor"
-              value={vendor}
-              onChange={e => setVendor(e.target.value)}
-            />
-
-            <textarea
-              className="border p-2 rounded w-full"
-              placeholder="Notes"
-              value={notes}
-              onChange={e => setNotes(e.target.value)}
-            />
-
-            <button
-              onClick={createItem}
-              className="bg-indigo-600 text-white px-4 py-2 rounded"
-            >
-              Add Item
-            </button>
-          </div>
+          <select
+            className="border p-2 rounded"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+          >
+            <option value="">All Locations</option>
+            {locations.map(l => (
+              <option key={l.id} value={l.id}>{l.name}</option>
+            ))}
+          </select>
         </div>
 
-        {/* Item List */}
-        <div className="bg-white p-6 rounded-xl shadow-md">
-          <div className="flex justify-between mb-4">
-            <h2 className="text-xl font-semibold">Items</h2>
-
-            <select
-              className="border p-2 rounded"
-              value={filterLocationId}
-              onChange={e => setFilterLocationId(e.target.value)}
-            >
-              <option value="">All Locations</option>
-              {locations.map(l => (
-                <option key={l.id} value={l.id}>{l.name}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="space-y-2">
-            {filteredItems.length === 0 && (
-              <div className="text-slate-500">No items yet.</div>
-            )}
-
-            {filteredItems.map(item => (
-              <div key={item.id} className="border rounded p-3 flex justify-between">
-                <div>
-                  <div className="font-medium">{item.name}</div>
-                  <div className="text-sm text-slate-600">
-                    Qty: {item.quantity}
-                    {item.category && ` • ${item.category}`}
-                    {item.location_id && ` • ${locationNameMap.get(item.location_id)}`}
-                    {item.purchase_price && ` • $${item.purchase_price}`}
-                  </div>
+        <div className="space-y-2">
+          {filteredItems.map(item => (
+            <div key={item.id} className="border rounded p-3 flex justify-between">
+              <div>
+                <div className="font-semibold">{item.name}</div>
+                <div className="text-sm text-slate-600">
+                  Qty: {item.quantity}
+                  {item.category && ` • ${item.category}`}
+                  {item.purchase_price && ` • $${item.purchase_price}`}
                 </div>
+              </div>
+
+              <div className="flex gap-3 text-sm">
+                <button
+                  onClick={() => setEditingItem(item)}
+                  className="text-indigo-600"
+                >
+                  Edit
+                </button>
 
                 <button
                   onClick={() => deleteItem(item.id)}
-                  className="text-red-600 text-sm"
+                  className="text-red-600"
                 >
                   Delete
                 </button>
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
-
       </div>
+
+      {editingItem && (
+        <EditModal
+          item={editingItem}
+          setItem={setEditingItem}
+          save={saveItem}
+          cancel={() => setEditingItem(null)}
+          locations={locations}
+        />
+      )}
     </main>
+  )
+}
+
+function EditModal({ item, setItem, save, cancel, locations }: any) {
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
+      <div className="bg-white p-6 rounded-xl w-[500px] space-y-3">
+        <h2 className="text-xl font-semibold">Edit Item</h2>
+
+        <input
+          className="border p-2 rounded w-full"
+          value={item.name}
+          onChange={e => setItem({ ...item, name: e.target.value })}
+        />
+
+        <input
+          className="border p-2 rounded w-full"
+          value={item.category ?? ''}
+          onChange={e => setItem({ ...item, category: e.target.value })}
+        />
+
+        <input
+          type="number"
+          className="border p-2 rounded w-full"
+          value={item.quantity}
+          onChange={e => setItem({ ...item, quantity: parseInt(e.target.value) })}
+        />
+
+        <input
+          type="number"
+          className="border p-2 rounded w-full"
+          value={item.purchase_price ?? ''}
+          onChange={e =>
+            setItem({
+              ...item,
+              purchase_price: e.target.value ? parseFloat(e.target.value) : null
+            })
+          }
+        />
+
+        <select
+          className="border p-2 rounded w-full"
+          value={item.location_id ?? ''}
+          onChange={e =>
+            setItem({
+              ...item,
+              location_id: e.target.value || null
+            })
+          }
+        >
+          <option value="">No Location</option>
+          {locations.map((l: any) => (
+            <option key={l.id} value={l.id}>{l.name}</option>
+          ))}
+        </select>
+
+        <textarea
+          className="border p-2 rounded w-full"
+          value={item.notes ?? ''}
+          onChange={e => setItem({ ...item, notes: e.target.value })}
+        />
+
+        <div className="flex justify-end gap-3">
+          <button onClick={cancel} className="text-slate-600">
+            Cancel
+          </button>
+          <button onClick={save} className="bg-indigo-600 text-white px-4 py-2 rounded">
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
