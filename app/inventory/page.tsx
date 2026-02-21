@@ -4,11 +4,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabaseBrowser } from '@/lib/supabase-browser'
 import EditItemModal, { InventoryItem } from '@/components/inventory/EditItemModal'
+import { DndContext, closestCenter, useDraggable, useDroppable } from '@dnd-kit/core'
+import { CSS } from '@dnd-kit/utilities'
 
 type LocationRow = {
   id: string
   name: string
   parent_id: string | null
+  sort_order?: number | null
 }
 
 export default function InventoryPage() {
@@ -19,10 +22,13 @@ export default function InventoryPage() {
   const [property, setProperty] = useState<any>(null)
   const [locations, setLocations] = useState<LocationRow[]>([])
   const [items, setItems] = useState<InventoryItem[]>([])
-  const [selectedLocationIds, setSelectedLocationIds] = useState<string[]>([])
+  const [selected, setSelected] = useState<string[]>([])
   const [expanded, setExpanded] = useState<string[]>([])
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null)
   const [photoTarget, setPhotoTarget] = useState<InventoryItem | null>(null)
+  const [inventoryCollapsed, setInventoryCollapsed] = useState(false)
+
+  /* ---------------- INIT ---------------- */
 
   useEffect(() => {
     const init = async () => {
@@ -32,12 +38,7 @@ export default function InventoryPage() {
         return
       }
 
-      const { data: prop } = await supabase
-        .from('properties')
-        .select('*')
-        .limit(1)
-        .single()
-
+      const { data: prop } = await supabase.from('properties').select('*').limit(1).single()
       if (!prop) return
       setProperty(prop)
 
@@ -45,6 +46,7 @@ export default function InventoryPage() {
         .from('locations')
         .select('*')
         .eq('property_id', prop.id)
+        .order('sort_order')
 
       const { data: its } = await supabase
         .from('items')
@@ -53,10 +55,19 @@ export default function InventoryPage() {
 
       setLocations(locs ?? [])
       setItems(its ?? [])
+
+      const savedExpanded = localStorage.getItem('expandedTree')
+      if (savedExpanded) setExpanded(JSON.parse(savedExpanded))
     }
 
     init()
   }, [])
+
+  useEffect(() => {
+    localStorage.setItem('expandedTree', JSON.stringify(expanded))
+  }, [expanded])
+
+  /* ---------------- TREE MAPS ---------------- */
 
   const childrenMap = useMemo(() => {
     const map: Record<string, LocationRow[]> = {}
@@ -74,127 +85,148 @@ export default function InventoryPage() {
   )
 
   const descendantsOf = (id: string): string[] => {
-    const result: string[] = [id]
+    const result = [id]
     const children = childrenMap[id] || []
-    for (const child of children) {
-      result.push(...descendantsOf(child.id))
+    for (const c of children) {
+      result.push(...descendantsOf(c.id))
     }
     return result
   }
 
-  const toggleLocation = (id: string) => {
-    setSelectedLocationIds(prev => {
-      if (prev.includes(id)) {
-        return prev.filter(x => x !== id)
-      }
-      return [...prev, id]
-    })
-  }
+  /* ---------------- COUNTS ---------------- */
 
-  const toggleExpand = (id: string) => {
-    setExpanded(prev =>
-      prev.includes(id)
-        ? prev.filter(x => x !== id)
-        : [...prev, id]
-    )
-  }
+  const countMap = useMemo(() => {
+    const counts: Record<string, number> = {}
 
-  const selectedSet = useMemo(() => {
-    const set = new Set<string>()
-    for (const id of selectedLocationIds) {
-      descendantsOf(id).forEach(d => set.add(d))
-    }
-    return set
-  }, [selectedLocationIds, childrenMap])
-
-  const filteredItems = useMemo(() => {
-    if (selectedLocationIds.length === 0) return []
-    return items.filter(
-      i => i.location_id && selectedSet.has(i.location_id)
-    )
-  }, [items, selectedSet])
-
-  const handleDelete = async (id: string) => {
-    if (!confirm('Delete this item?')) return
-    await supabase.from('items').delete().eq('id', id)
-    setItems(prev => prev.filter(i => i.id !== id))
-  }
-
-  const handlePhotoUpload = async (files: FileList) => {
-    if (!photoTarget) return
-
-    const uploadedUrls: string[] = []
-
-    for (const file of Array.from(files)) {
-      const filePath = `${photoTarget.id}/${Date.now()}-${file.name}`
-
-      const { error } = await supabase.storage
-        .from('item-photos')
-        .upload(filePath, file)
-
-      if (error) return alert(error.message)
-
-      const { data } = supabase.storage
-        .from('item-photos')
-        .getPublicUrl(filePath)
-
-      uploadedUrls.push(data.publicUrl)
+    for (const item of items) {
+      if (!item.location_id) continue
+      counts[item.location_id] = (counts[item.location_id] || 0) + 1
     }
 
-    const updatedPhotos = [
-      ...(photoTarget.photos || []),
-      ...uploadedUrls
-    ]
+    const rollup: Record<string, number> = {}
+
+    const compute = (id: string): number => {
+      if (rollup[id] !== undefined) return rollup[id]
+      let total = counts[id] || 0
+      const children = childrenMap[id] || []
+      for (const c of children) total += compute(c.id)
+      rollup[id] = total
+      return total
+    }
+
+    locations.forEach(l => compute(l.id))
+    return rollup
+  }, [items, locations])
+
+  /* ---------------- SELECTION ---------------- */
+
+  const toggleSelect = (id: string) => {
+    const branch = descendantsOf(id)
+    const isSelected = selected.includes(id)
+
+    if (isSelected) {
+      setSelected(prev => prev.filter(x => !branch.includes(x)))
+    } else {
+      setSelected(prev => Array.from(new Set([...prev, ...branch])))
+    }
+  }
+
+  const isIndeterminate = (id: string) => {
+    const branch = descendantsOf(id)
+    const selectedCount = branch.filter(x => selected.includes(x)).length
+    return selectedCount > 0 && selectedCount < branch.length
+  }
+
+  const isChecked = (id: string) => selected.includes(id)
+
+  const selectedSet = new Set(selected)
+
+  const filteredItems = items.filter(
+    i => i.location_id && selectedSet.has(i.location_id)
+  )
+
+  /* ---------------- DRAG & DROP ---------------- */
+
+  async function handleDragEnd(event: any) {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
 
     await supabase
-      .from('items')
-      .update({ photos: updatedPhotos })
-      .eq('id', photoTarget.id)
+      .from('locations')
+      .update({ parent_id: over.id })
+      .eq('id', active.id)
 
-    setItems(prev =>
-      prev.map(i =>
-        i.id === photoTarget.id
-          ? { ...i, photos: updatedPhotos }
-          : i
-      )
-    )
-
-    setPhotoTarget(null)
+    const { data } = await supabase.from('locations').select('*')
+    setLocations(data ?? [])
   }
 
-  const renderTree = (node: LocationRow, depth = 0) => {
+  /* ---------------- TREE NODE ---------------- */
+
+  function TreeNode({ node, depth }: { node: LocationRow; depth: number }) {
     const hasChildren = childrenMap[node.id]?.length > 0
-    const isExpanded = expanded.includes(node.id)
+    const expandedNode = expanded.includes(node.id)
+
+    const { attributes, listeners, setNodeRef, transform } = useDraggable({
+      id: node.id
+    })
+
+    const style = transform
+      ? { transform: CSS.Translate.toString(transform) }
+      : undefined
 
     return (
-      <div key={node.id}>
+      <div ref={setNodeRef} style={style}>
         <div
-          style={{ paddingLeft: depth * 20 }}
-          className="flex items-center gap-2"
+          className="flex items-center gap-2 py-1 group"
+          style={{ paddingLeft: depth * 18 }}
         >
+          <div className="w-1 h-6 bg-indigo-400 rounded-full mr-1" />
+
           {hasChildren && (
             <button
-              onClick={() => toggleExpand(node.id)}
-              className="text-xs"
+              onClick={() =>
+                setExpanded(prev =>
+                  prev.includes(node.id)
+                    ? prev.filter(x => x !== node.id)
+                    : [...prev, node.id]
+                )
+              }
+              className="text-xs text-slate-500"
             >
-              {isExpanded ? '▾' : '▸'}
+              {expandedNode ? '▾' : '▸'}
             </button>
           )}
 
           <input
             type="checkbox"
-            checked={selectedLocationIds.includes(node.id)}
-            onChange={() => toggleLocation(node.id)}
+            checked={isChecked(node.id)}
+            ref={el => {
+              if (el) el.indeterminate = isIndeterminate(node.id)
+            }}
+            onChange={() => toggleSelect(node.id)}
           />
 
-          <span className="text-sm">{node.name}</span>
+          <span className="text-sm font-medium text-slate-700">
+            {node.name}
+          </span>
+
+          <span className="text-xs bg-slate-200 px-2 py-0.5 rounded-full ml-2">
+            {countMap[node.id] || 0}
+          </span>
+
+          <div
+            {...listeners}
+            {...attributes}
+            className="ml-auto opacity-0 group-hover:opacity-100 cursor-grab text-slate-400 text-xs"
+          >
+            ☰
+          </div>
         </div>
 
-        {hasChildren &&
-          isExpanded &&
-          childrenMap[node.id].map(child =>
-            renderTree(child, depth + 1)
-          )}
+        {hasChildren && expandedNode &&
+          childrenMap[node.id].map(child => (
+            <TreeNode key={child.id} node={child} depth={depth + 1} />
+          ))}
       </div>
     )
   }
@@ -204,32 +236,30 @@ export default function InventoryPage() {
   return (
     <main className="min-h-screen bg-slate-100 p-8">
 
-      <input
-        type="file"
-        multiple
-        accept="image/*"
-        ref={fileInputRef}
-        className="hidden"
-        onChange={e => {
-          if (e.target.files) handlePhotoUpload(e.target.files)
-        }}
-      />
+      <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
 
-      <div className="bg-white p-6 rounded-xl shadow-md mb-6">
-        <h1 className="text-2xl font-bold mb-4">
-          Inventory
-        </h1>
+        <div className="bg-white p-6 rounded-xl shadow-md mb-6">
+          <h1 className="text-2xl font-bold mb-4">
+            Inventory Locations
+          </h1>
 
-        <div className="space-y-2">
-          {roots.map(root => renderTree(root))}
+          {roots.map(root => (
+            <TreeNode key={root.id} node={root} depth={0} />
+          ))}
         </div>
+
+      </DndContext>
+
+      <div className="mb-4">
+        <button
+          onClick={() => setInventoryCollapsed(prev => !prev)}
+          className="text-sm text-indigo-600"
+        >
+          {inventoryCollapsed ? 'Show Inventory' : 'Hide Inventory'}
+        </button>
       </div>
 
-      {selectedLocationIds.length === 0 ? (
-        <div className="text-slate-500">
-          Select one or more locations.
-        </div>
-      ) : (
+      {!inventoryCollapsed && (
         <div className="space-y-4">
           {filteredItems.map(item => (
             <div
@@ -260,16 +290,14 @@ export default function InventoryPage() {
                 className="flex-1 cursor-pointer"
                 onClick={() => setEditingItem(item)}
               >
-                <div className="font-semibold">
-                  {item.name}
-                </div>
-                <div className="text-sm text-slate-500">
-                  {item.vendor}
-                </div>
+                <div className="font-semibold">{item.name}</div>
+                <div className="text-sm text-slate-500">{item.vendor}</div>
               </div>
 
               <button
-                onClick={() => handleDelete(item.id)}
+                onClick={() =>
+                  supabase.from('items').delete().eq('id', item.id)
+                }
                 className="text-red-600"
               >
                 Delete
@@ -283,14 +311,14 @@ export default function InventoryPage() {
         <EditItemModal
           item={editingItem}
           onClose={() => setEditingItem(null)}
-          onUpdated={(updated) => {
+          onUpdated={updated =>
             setItems(prev =>
               prev.map(i =>
                 i.id === updated.id ? updated : i
               )
             )
-          }}
-          onDeleted={(id) =>
+          }
+          onDeleted={id =>
             setItems(prev => prev.filter(i => i.id !== id))
           }
         />
