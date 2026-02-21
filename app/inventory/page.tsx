@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabaseBrowser } from '@/lib/supabase-browser'
+import EditItemModal from '@/components/inventory/EditItemModal'
 
 type LocationRow = {
   id: string
@@ -11,21 +12,18 @@ type LocationRow = {
   parent_id: string | null
 }
 
-type CategoryRow = {
-  id: string
-  name: string
-}
-
 type ItemRow = {
   id: string
   property_id: string
   location_id: string | null
   name: string
-  category_id: string | null
-  purchase_price: number | null
+  description: string | null
   vendor: string | null
-  notes: string | null
-  photo_url: string | null
+  price: number | null
+  category_id: string | null
+  warranty_expiration: string | null
+  depreciation_years: number | null
+  photos: string[] | null
 }
 
 export default function InventoryPage() {
@@ -33,14 +31,13 @@ export default function InventoryPage() {
   const router = useRouter()
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [activePhotoItem, setActivePhotoItem] = useState<ItemRow | null>(null)
 
   const [property, setProperty] = useState<any>(null)
   const [locations, setLocations] = useState<LocationRow[]>([])
-  const [categories, setCategories] = useState<CategoryRow[]>([])
   const [items, setItems] = useState<ItemRow[]>([])
   const [selectedLocations, setSelectedLocations] = useState<string[]>([])
   const [editingItem, setEditingItem] = useState<ItemRow | null>(null)
-  const [activePhotoItem, setActivePhotoItem] = useState<ItemRow | null>(null)
 
   useEffect(() => {
     const init = async () => {
@@ -64,52 +61,74 @@ export default function InventoryPage() {
         .select('*')
         .eq('property_id', prop.id)
 
-      const { data: cats } = await supabase
-        .from('categories')
-        .select('*')
-        .eq('property_id', prop.id)
-
       const { data: its } = await supabase
-        .from('items')
+        .from('inventory_items')
         .select('*')
         .eq('property_id', prop.id)
 
       setLocations(locs ?? [])
-      setCategories(cats ?? [])
       setItems(its ?? [])
     }
 
     init()
   }, [])
 
+  const validLocations = useMemo(
+    () => locations.filter(l => l.parent_id !== null),
+    [locations]
+  )
+
+  const toggleLocation = (id: string) => {
+    setSelectedLocations(prev =>
+      prev.includes(id)
+        ? prev.filter(x => x !== id)
+        : [...prev, id]
+    )
+  }
+
+  const filteredItems = useMemo(() => {
+    if (selectedLocations.length === 0) return []
+    return items.filter(
+      i => i.location_id && selectedLocations.includes(i.location_id)
+    )
+  }, [items, selectedLocations])
+
   const handlePhotoUpload = async (files: FileList) => {
     if (!activePhotoItem) return
+
+    const uploadedUrls: string[] = []
 
     for (let file of Array.from(files)) {
       const filePath = `${activePhotoItem.id}/${Date.now()}-${file.name}`
 
-      const { error: uploadError } = await supabase.storage
+      const { error } = await supabase.storage
         .from('item-photos')
         .upload(filePath, file)
 
-      if (uploadError) {
-        alert(uploadError.message)
-        return
-      }
+      if (!error) {
+        const { data } = supabase.storage
+          .from('item-photos')
+          .getPublicUrl(filePath)
 
-      const { data } = supabase.storage
-        .from('item-photos')
-        .getPublicUrl(filePath)
+        uploadedUrls.push(data.publicUrl)
+      }
+    }
+
+    if (uploadedUrls.length > 0) {
+      const updatedPhotos = [
+        ...(activePhotoItem.photos || []),
+        ...uploadedUrls
+      ]
 
       await supabase
-        .from('items')
-        .update({ photo_url: data.publicUrl })
+        .from('inventory_items')
+        .update({ photos: updatedPhotos })
         .eq('id', activePhotoItem.id)
 
       setItems(prev =>
         prev.map(i =>
           i.id === activePhotoItem.id
-            ? { ...i, photo_url: data.publicUrl }
+            ? { ...i, photos: updatedPhotos }
             : i
         )
       )
@@ -122,6 +141,7 @@ export default function InventoryPage() {
 
   return (
     <main className="min-h-screen bg-slate-100 p-8">
+
       <input
         type="file"
         ref={fileInputRef}
@@ -133,44 +153,79 @@ export default function InventoryPage() {
         }}
       />
 
-      {items.map(item => (
-        <div
-          key={item.id}
-          className="bg-white p-4 rounded-xl shadow-md flex gap-4"
-        >
-          <div
-            className="w-24 h-24 border rounded cursor-pointer"
-            onClick={() => {
-              setActivePhotoItem(item)
-              fileInputRef.current?.click()
-            }}
-          >
-            {item.photo_url ? (
-              <img
-                src={item.photo_url}
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <img
-                src="/no-image.jpg"
-                className="w-full h-full object-contain p-4 opacity-60"
-              />
-            )}
-          </div>
+      <div className="bg-white p-6 rounded-xl shadow-md mb-6">
+        <h1 className="text-2xl font-bold mb-4">Inventory</h1>
 
-          <div>
-            <div className="font-semibold">{item.name}</div>
-            <div className="text-sm text-slate-500">
-              Category:{' '}
-              {
-                categories.find(
-                  c => c.id === item.category_id
-                )?.name ?? '—'
-              }
+        <div className="flex gap-2 flex-wrap">
+          {validLocations.map(l => (
+            <button
+              key={l.id}
+              onClick={() => toggleLocation(l.id)}
+              className={`px-3 py-1 rounded border ${
+                selectedLocations.includes(l.id)
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-white'
+              }`}
+            >
+              {l.name}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        {filteredItems.map(item => (
+          <div
+            key={item.id}
+            className="bg-white rounded-xl shadow-md p-4 flex gap-4 hover:shadow-lg transition cursor-pointer"
+            onClick={() => setEditingItem(item)}
+          >
+            <div
+              className="w-28 h-28 rounded-lg overflow-hidden border bg-slate-100 flex-shrink-0"
+              onClick={(e) => {
+                e.stopPropagation()
+                setActivePhotoItem(item)
+                fileInputRef.current?.click()
+              }}
+            >
+              {item.photos && item.photos.length > 0 ? (
+                <img
+                  src={item.photos[0]}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <img
+                  src="/no-image.jpg"
+                  className="w-full h-full object-contain p-4 opacity-60"
+                />
+              )}
+            </div>
+
+            <div className="flex-1">
+              <div className="text-lg font-semibold">{item.name}</div>
+              <div className="text-sm text-slate-600">
+                ${item.price ?? 0}
+              </div>
+              <div className="text-sm text-slate-500">
+                {item.vendor ?? ''}
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        ))}
+      </div>
+
+      {editingItem && (
+        <EditItemModal
+          item={editingItem}
+          onClose={() => setEditingItem(null)}
+          onUpdated={(updated) => {
+            setItems(prev =>
+              prev.map(i => (i.id === updated.id ? updated : i))
+            )
+          }}
+        />
+      )}
+
     </main>
   )
 }
