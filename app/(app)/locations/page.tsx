@@ -1,290 +1,293 @@
 'use client'
 
-import React, { useEffect, useMemo, useState } from 'react'
-import { supabaseBrowser } from '@/lib/supabase-browser'
-
+import { useEffect, useMemo, useState } from 'react'
+import { createClient } from '@/lib/supabase/client'
 import {
   DndContext,
-  DragEndEvent,
-  DragOverEvent,
-  PointerSensor,
-  useSensor,
-  useSensors,
   closestCenter,
-  useDroppable
+  DragEndEvent,
+  useDroppable,
+  useDraggable
 } from '@dnd-kit/core'
-
 import {
   SortableContext,
-  useSortable,
   verticalListSortingStrategy,
+  useSortable,
   arrayMove
 } from '@dnd-kit/sortable'
-
 import { CSS } from '@dnd-kit/utilities'
+import { Plus, Trash2, GripVertical } from 'lucide-react'
 
-type LocationRow = {
+interface Location {
   id: string
   name: string
   parent_id: string | null
-  sort_order: number | null
   property_id: string
+  sort_order: number | null
 }
 
-type ItemRow = {
+interface Item {
   id: string
   location_id: string
 }
 
-function cx(...c: (string | false | undefined)[]) {
-  return c.filter(Boolean).join(' ')
-}
-
 export default function LocationsPage() {
-  const supabase = supabaseBrowser()
+  const supabase = createClient()
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } })
-  )
-
+  const [locations, setLocations] = useState<Location[]>([])
+  const [items, setItems] = useState<Item[]>([])
   const [propertyId, setPropertyId] = useState<string | null>(null)
-  const [locations, setLocations] = useState<LocationRow[]>([])
-  const [items, setItems] = useState<ItemRow[]>([])
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-  const [dragOverId, setDragOverId] = useState<string | null>(null)
+  const [showModal, setShowModal] = useState(false)
+  const [newLocationName, setNewLocationName] = useState('')
+  const [newParentId, setNewParentId] = useState<string | null>(null)
 
   useEffect(() => {
-    init()
+    loadData()
   }, [])
 
-  async function init() {
-    const { data: prop } = await supabase
+  async function loadData() {
+    const {
+      data: { user }
+    } = await supabase.auth.getUser()
+
+    if (!user) return
+
+    const { data: properties } = await supabase
       .from('properties')
       .select('id')
+      .eq('user_id', user.id)
       .limit(1)
-      .single()
 
-    if (!prop?.id) return
-    setPropertyId(prop.id)
+    if (!properties?.length) return
+
+    const pid = properties[0].id
+    setPropertyId(pid)
 
     const { data: locs } = await supabase
       .from('locations')
       .select('*')
-      .eq('property_id', prop.id)
-      .order('parent_id')
-      .order('sort_order')
+      .eq('property_id', pid)
+      .order('sort_order', { ascending: true })
 
-    const { data: inv } = await supabase
+    const { data: itemRows } = await supabase
       .from('items')
-      .select('id,location_id')
-      .eq('property_id', prop.id)
+      .select('id, location_id')
+      .eq('property_id', pid)
 
-    setLocations((locs ?? []) as LocationRow[])
-    setItems((inv ?? []) as ItemRow[])
+    setLocations(locs || [])
+    setItems(itemRows || [])
   }
-
-  const childrenMap = useMemo(() => {
-    const map = new Map<string | null, LocationRow[]>()
-    for (const l of locations) {
-      const key = l.parent_id ?? null
-      if (!map.has(key)) map.set(key, [])
-      map.get(key)!.push(l)
-    }
-    for (const arr of map.values()) {
-      arr.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-    }
-    return map
-  }, [locations])
 
   function getChildren(parentId: string | null) {
-    return childrenMap.get(parentId ?? null) ?? []
+    return locations.filter(l => l.parent_id === parentId)
   }
 
-  function getAllDescendants(id: string): string[] {
-    const result: string[] = []
-    const stack = [id]
-    while (stack.length) {
-      const cur = stack.pop()!
-      const kids = getChildren(cur)
-      for (const k of kids) {
-        result.push(k.id)
-        stack.push(k.id)
-      }
-    }
-    return result
+  function getItemCount(locationId: string) {
+    return items.filter(i => i.location_id === locationId).length
   }
 
-  const itemCounts = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const loc of locations) {
-      const ids = [loc.id, ...getAllDescendants(loc.id)]
-      const count = items.filter(i => ids.includes(i.location_id)).length
-      map.set(loc.id, count)
-    }
-    return map
-  }, [locations, items])
+  async function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event
+    if (!over) return
 
-  async function reorder(parentId: string | null, activeId: string, overId: string) {
-    if (!propertyId) return
+    const activeId = active.id as string
+    const overId = over.id as string
 
-    const siblings = getChildren(parentId)
-    const oldIndex = siblings.findIndex(s => s.id === activeId)
-    const newIndex = siblings.findIndex(s => s.id === overId)
-    if (oldIndex < 0 || newIndex < 0) return
+    if (activeId === overId) return
 
-    const moved = arrayMove(siblings, oldIndex, newIndex)
+    const activeLoc = locations.find(l => l.id === activeId)
+    const overLoc = locations.find(l => l.id === overId)
+    if (!activeLoc || !overLoc) return
 
-    for (let i = 0; i < moved.length; i++) {
+    // Re-parent
+    if (overId !== activeId) {
       await supabase
         .from('locations')
-        .update({ sort_order: i + 1 })
-        .eq('id', moved[i].id)
+        .update({ parent_id: overLoc.id })
+        .eq('id', activeId)
     }
 
-    await init()
-  }
+    // Reorder within siblings
+    const siblings = locations.filter(
+      l => l.parent_id === overLoc.parent_id
+    )
 
-  async function reparent(activeId: string, newParentId: string | null) {
-    if (!propertyId) return
+    const oldIndex = siblings.findIndex(l => l.id === activeId)
+    const newIndex = siblings.findIndex(l => l.id === overId)
 
-    const siblings = getChildren(newParentId)
-    const maxSort = siblings.reduce((m, s) => Math.max(m, s.sort_order ?? 0), 0)
+    if (oldIndex >= 0 && newIndex >= 0) {
+      const reordered = arrayMove(siblings, oldIndex, newIndex)
 
-    await supabase
-      .from('locations')
-      .update({
-        parent_id: newParentId,
-        sort_order: maxSort + 1
-      })
-      .eq('id', activeId)
-
-    await init()
-  }
-
-  function onDragOver(e: DragOverEvent) {
-    setDragOverId((e.over?.id as string) ?? null)
-  }
-
-  async function onDragEnd(e: DragEndEvent) {
-    setDragOverId(null)
-    const activeId = e.active.id as string
-    const overId = e.over?.id as string | undefined
-    if (!overId) return
-
-    const active = locations.find(l => l.id === activeId)
-    const over = locations.find(l => l.id === overId)
-    if (!active || !over) return
-
-    if (active.parent_id === over.parent_id) {
-      await reorder(active.parent_id ?? null, activeId, overId)
-    } else {
-      await reparent(activeId, overId)
+      for (let i = 0; i < reordered.length; i++) {
+        await supabase
+          .from('locations')
+          .update({ sort_order: i })
+          .eq('id', reordered[i].id)
+      }
     }
+
+    await loadData()
   }
 
-  function toggle(id: string) {
-    setExpanded(prev => ({ ...prev, [id]: !prev[id] }))
+  async function createLocation() {
+    if (!propertyId || !newLocationName) return
+
+    await supabase.from('locations').insert({
+      name: newLocationName,
+      property_id: propertyId,
+      parent_id: newParentId,
+      sort_order: locations.length
+    })
+
+    setNewLocationName('')
+    setNewParentId(null)
+    setShowModal(false)
+    loadData()
   }
 
-  if (!propertyId) return null
+  async function deleteLocation(id: string) {
+    const children = locations.filter(l => l.parent_id === id)
+    if (children.length > 0) {
+      alert('Cannot delete location with children.')
+      return
+    }
+
+    const itemCount = getItemCount(id)
+    if (itemCount > 0) {
+      alert('Cannot delete location with inventory items.')
+      return
+    }
+
+    await supabase.from('locations').delete().eq('id', id)
+    loadData()
+  }
+
+  function renderTree(parentId: string | null, depth = 0) {
+    const children = getChildren(parentId)
+    if (!children.length) return null
+
+    return (
+      <SortableContext
+        items={children.map(c => c.id)}
+        strategy={verticalListSortingStrategy}
+      >
+        {children.map(child => (
+          <SortableRow
+            key={child.id}
+            location={child}
+            depth={depth}
+            itemCount={getItemCount(child.id)}
+            onDelete={deleteLocation}
+          >
+            {renderTree(child.id, depth + 1)}
+          </SortableRow>
+        ))}
+      </SortableContext>
+    )
+  }
 
   return (
-    <main className="max-w-5xl mx-auto p-6">
-      <h1 className="text-2xl font-semibold mb-6">Locations</h1>
-
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragOver={onDragOver}
-        onDragEnd={onDragEnd}
-      >
-        <SortableContext
-          items={locations.map(l => l.id)}
-          strategy={verticalListSortingStrategy}
+    <div className="max-w-5xl mx-auto mt-8">
+      <div className="flex justify-between mb-4">
+        <h1 className="text-2xl font-bold">Locations</h1>
+        <button
+          onClick={() => setShowModal(true)}
+          className="bg-indigo-600 text-white px-4 py-2 rounded-md flex items-center gap-2"
         >
-          {getChildren(null).map(loc => (
-            <TreeNode
-              key={loc.id}
-              node={loc}
-              depth={0}
-              expanded={expanded}
-              toggle={toggle}
-              getChildren={getChildren}
-              itemCounts={itemCounts}
-              dragOverId={dragOverId}
-            />
-          ))}
-        </SortableContext>
+          <Plus size={16} /> New Location
+        </button>
+      </div>
+
+      <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        {renderTree(null)}
       </DndContext>
-    </main>
+
+      {showModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
+          <div className="bg-white p-6 rounded-md w-96">
+            <h2 className="text-lg font-semibold mb-4">Add New Location</h2>
+            <input
+              value={newLocationName}
+              onChange={e => setNewLocationName(e.target.value)}
+              placeholder="Location Name"
+              className="w-full border p-2 rounded mb-3"
+            />
+            <select
+              value={newParentId || ''}
+              onChange={e =>
+                setNewParentId(e.target.value || null)
+              }
+              className="w-full border p-2 rounded mb-4"
+            >
+              <option value="">Root</option>
+              {locations.map(l => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
+                </option>
+              ))}
+            </select>
+
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowModal(false)}>Cancel</button>
+              <button
+                onClick={createLocation}
+                className="bg-indigo-600 text-white px-4 py-2 rounded"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
-function TreeNode({
-  node,
+function SortableRow({
+  location,
   depth,
-  expanded,
-  toggle,
-  getChildren,
-  itemCounts,
-  dragOverId
+  itemCount,
+  onDelete,
+  children
 }: any) {
   const { attributes, listeners, setNodeRef, transform, transition } =
-    useSortable({ id: node.id })
+    useSortable({ id: location.id })
 
   const style = {
     transform: CSS.Transform.toString(transform),
     transition
   }
 
-  const children = getChildren(node.id)
+  const colorLevels = [
+    'border-indigo-500',
+    'border-purple-500',
+    'border-blue-500',
+    'border-emerald-500'
+  ]
 
   return (
     <div ref={setNodeRef} style={style}>
       <div
-        className={cx(
-          'flex items-center justify-between px-3 py-2 rounded-lg border-l-4',
-          depth === 0 && 'border-indigo-600',
-          depth === 1 && 'border-indigo-400 bg-indigo-50',
-          depth === 2 && 'border-sky-400 bg-sky-50',
-          depth >= 3 && 'border-slate-300 bg-slate-50',
-          dragOverId === node.id && 'ring-2 ring-indigo-300'
-        )}
-        style={{ marginLeft: depth * 16 }}
+        className={`flex items-center justify-between pl-${depth * 4} border-l-4 ${
+          colorLevels[depth % colorLevels.length]
+        } py-2 bg-white hover:bg-slate-50 transition-all`}
       >
         <div className="flex items-center gap-2">
-          <button onClick={() => toggle(node.id)}>
-            {children.length ? (expanded[node.id] ? '▾' : '▸') : '•'}
-          </button>
-
+          <span {...attributes} {...listeners}>
+            <GripVertical size={16} />
+          </span>
           <span className="font-medium">
-            {node.name}{' '}
-            <span className="text-slate-500">({itemCounts.get(node.id) ?? 0})</span>
+            {location.name} ({itemCount})
           </span>
         </div>
-
-        <div
-          {...attributes}
-          {...listeners}
-          className="cursor-grab text-slate-400"
+        <button
+          onClick={() => onDelete(location.id)}
+          className="text-red-500 hover:text-red-700"
         >
-          ☰
-        </div>
+          <Trash2 size={16} />
+        </button>
       </div>
-
-      {expanded[node.id] &&
-        children.map((child: any) => (
-          <TreeNode
-            key={child.id}
-            node={child}
-            depth={depth + 1}
-            expanded={expanded}
-            toggle={toggle}
-            getChildren={getChildren}
-            itemCounts={itemCounts}
-            dragOverId={dragOverId}
-          />
-        ))}
+      {children}
     </div>
   )
 }
