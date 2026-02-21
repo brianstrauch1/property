@@ -30,6 +30,7 @@ export default function InventoryPage() {
   const [property, setProperty] = useState<any>(null)
   const [locations, setLocations] = useState<LocationRow[]>([])
   const [items, setItems] = useState<InventoryItem[]>([])
+
   const [selected, setSelected] = useState<string[]>([])
   const [expanded, setExpanded] = useState<string[]>([])
   const [inventoryCollapsed, setInventoryCollapsed] = useState(false)
@@ -39,72 +40,106 @@ export default function InventoryPage() {
 
   const [search, setSearch] = useState('')
 
-  // inline rename
+  // inline rename (wired for future; context menu actions can use these later)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState<string>('')
 
-  // context menu
+  // context menu shell (wired for future; not required for debug)
   const [ctx, setCtx] = useState<CtxMenu>({ open: false, x: 0, y: 0, locationId: null })
 
-  // debug
-  const [debug, setDebug] = useState<string>('')
+  // debug text
+  const [debug, setDebug] = useState<string>('Initializing…')
 
   /* ---------------- INIT ---------------- */
 
   useEffect(() => {
     const init = async () => {
-      setDebug('Initializing…')
+      try {
+        setDebug('Initializing…')
 
-      const { data: userData, error: userErr } = await supabase.auth.getUser()
-      setDebug(prev => `${prev}\nUser ID: ${userData?.user?.id ?? 'NULL'}`)
-      if (userErr) setDebug(`auth.getUser error: ${userErr.message}`)
-      if (!userData?.user) {
-        router.push('/')
-        return
+        const { data: userData, error: userErr } = await supabase.auth.getUser()
+        if (userErr) {
+          setDebug(`auth.getUser error: ${userErr.message}`)
+        }
+
+        if (!userData?.user) {
+          setDebug('No authenticated user. Redirecting to /')
+          router.push('/')
+          return
+        }
+
+        setDebug(prev => `${prev}\nUser: ${userData.user.id}`)
+
+        const { data: prop, error: propErr } = await supabase
+          .from('properties')
+          .select('*')
+          .limit(1)
+          .single()
+
+        if (propErr) {
+          setDebug(prev => `${prev}\nproperties error: ${propErr.message}`)
+          return
+        }
+
+        if (!prop) {
+          setDebug(prev => `${prev}\nNo property returned.`)
+          return
+        }
+
+        setProperty(prop)
+        setDebug(prev => `${prev}\nProperty: ${prop.id}`)
+
+        const { data: locs, error: locErr } = await supabase
+          .from('locations')
+          .select('*')
+          .eq('property_id', prop.id)
+          .order('sort_order', { ascending: true })
+
+        if (locErr) setDebug(prev => `${prev}\nlocations error: ${locErr.message}`)
+        setLocations(locs ?? [])
+        setDebug(prev => `${prev}\nlocations rows: ${(locs ?? []).length}`)
+
+        const { data: its, error: itemsErr } = await supabase
+          .from('items')
+          .select('*')
+          .eq('property_id', prop.id)
+
+        if (itemsErr) setDebug(prev => `${prev}\nitems error: ${itemsErr.message}`)
+        setItems(its ?? [])
+        setDebug(prev => `${prev}\nitems rows: ${(its ?? []).length}`)
+
+        const savedExpanded = localStorage.getItem('expandedTree')
+        if (savedExpanded) setExpanded(JSON.parse(savedExpanded))
+
+        setDebug(prev => `${prev}\nLoaded.`)
+      } catch (e: any) {
+        setDebug(`Init exception: ${e?.message ?? String(e)}`)
       }
-
-      const { data: prop, error: propErr } = await supabase
-        .from('properties')
-        .select('*')
-        .limit(1)
-        .single()
-
-      if (propErr) setDebug(`properties error: ${propErr.message}`)
-      if (!prop) {
-        setDebug('No property returned from properties table.')
-        return
-      }
-      setProperty(prop)
-
-      const { data: locs, error: locErr } = await supabase
-        .from('locations')
-        .select('*')
-        .eq('property_id', prop.id)
-        .order('sort_order', { ascending: true })
-
-      if (locErr) setDebug(`locations error: ${locErr.message}`)
-      setLocations(locs ?? [])
-
-      const { data: its, error: itemsErr } = await supabase
-        .from('items')
-        .select('*')
-        .eq('property_id', prop.id)
-
-      if (itemsErr) setDebug(`items error: ${itemsErr.message}`)
-      setItems(its ?? [])
-
-      const savedExpanded = localStorage.getItem('expandedTree')
-      if (savedExpanded) setExpanded(JSON.parse(savedExpanded))
-
-      setDebug('Loaded.')
     }
 
     init()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
     localStorage.setItem('expandedTree', JSON.stringify(expanded))
   }, [expanded])
+
+  // close context menu on click/escape/scroll (safe even if not used)
+  useEffect(() => {
+    const close = () => setCtx(prev => ({ ...prev, open: false, locationId: null }))
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close()
+    }
+    window.addEventListener('click', close)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [])
 
   /* ---------------- MAPS / HELPERS ---------------- */
 
@@ -205,7 +240,7 @@ export default function InventoryPage() {
     return items.filter(i => i.location_id && selectedSet.has(i.location_id))
   }, [items, selectedSet, selected.length])
 
-  /* ---------------- SEARCH FILTER (safer) ---------------- */
+  /* ---------------- SEARCH FILTER (tree) ---------------- */
 
   const searchLower = search.trim().toLowerCase()
   const matchesSearch = (loc: LocationRow) =>
@@ -227,13 +262,27 @@ export default function InventoryPage() {
     if (!searchLower) return
     const toExpand = new Set(expanded)
     for (const l of locations) {
-      if (matchesSearch(l)) {
-        ancestorsPath(l.id).forEach(id => toExpand.add(id))
-      }
+      if (matchesSearch(l)) ancestorsPath(l.id).forEach(id => toExpand.add(id))
     }
     setExpanded(Array.from(toExpand))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchLower])
+
+  /* ---------------- BREADCRUMB SELECTION SUMMARY ---------------- */
+
+  const selectionSummary = useMemo(() => {
+    const selectedIds = Array.from(new Set(selected))
+    const isDescOfAnotherSelected = (id: string) => {
+      const path = ancestorsPath(id)
+      return path.some(a => a !== id && selectedIds.includes(a))
+    }
+    const top = selectedIds.filter(id => !isDescOfAnotherSelected(id))
+    const labelFor = (id: string) => byId[id]?.name ?? id
+    return top.map(id => ({
+      id,
+      pathLabel: ancestorsPath(id).map(labelFor).join(' → ')
+    }))
+  }, [selected, byId])
 
   /* ---------------- PHOTOS ---------------- */
 
@@ -266,32 +315,68 @@ export default function InventoryPage() {
     const activeId = String(active.id)
     const overId = String(over.id)
 
+    // prevent cycles
     const activeDesc = new Set(descendantsOf(activeId))
     if (activeDesc.has(overId)) return
 
     const { error } = await supabase.from('locations').update({ parent_id: overId }).eq('id', activeId)
     if (error) return alert(error.message)
 
-    const { data } = await supabase.from('locations').select('*').eq('property_id', property.id).order('sort_order')
+    const { data } = await supabase
+      .from('locations')
+      .select('*')
+      .eq('property_id', property.id)
+      .order('sort_order', { ascending: true })
+
     setLocations(data ?? [])
   }
 
-  /* ---------------- QUICK FIX: Create a root if none exist ---------------- */
+  /* ---------------- DEBUG ACTIONS ---------------- */
 
-  const createRootIfNone = async () => {
-    if (!property) return
-    const { data: existing } = await supabase
-      .from('locations')
-      .select('id')
-      .eq('property_id', property.id)
-      .is('parent_id', null)
-      .limit(1)
-
-    if (existing && existing.length > 0) {
-      alert('You already have a root location. No action needed.')
+  const testLocationsAccess = async () => {
+    if (!property?.id) {
+      setDebug('No property loaded yet.')
       return
     }
 
+    try {
+      const { data: s } = await supabase.auth.getSession()
+      const uid = s.session?.user?.id ?? 'NO_SESSION'
+      const token = s.session?.access_token ? 'YES' : 'NO'
+
+      setDebug(`Session: ${token} | User: ${uid}`)
+
+      const { count, error } = await supabase
+        .from('locations')
+        .select('*', { count: 'exact', head: true })
+        .eq('property_id', property.id)
+
+      if (error) {
+        setDebug(prev => `${prev}\nlocations count ERROR: ${error.message}`)
+        return
+      }
+
+      setDebug(prev => `${prev}\nlocations count OK: ${count}`)
+
+      // also fetch one row to prove visibility
+      const { data: sample, error: sampleErr } = await supabase
+        .from('locations')
+        .select('id,name,parent_id,property_id')
+        .eq('property_id', property.id)
+        .limit(3)
+
+      if (sampleErr) {
+        setDebug(prev => `${prev}\nlocations sample ERROR: ${sampleErr.message}`)
+      } else {
+        setDebug(prev => `${prev}\nlocations sample: ${JSON.stringify(sample)}`)
+      }
+    } catch (e: any) {
+      setDebug(`Test exception: ${e?.message ?? String(e)}`)
+    }
+  }
+
+  const createRootLocation = async () => {
+    if (!property?.id) return
     const name = prompt('Root location name? (Example: Household)')
     if (!name?.trim()) return
 
@@ -309,7 +394,7 @@ export default function InventoryPage() {
     if (error) return alert(error.message)
 
     setLocations(prev => [...prev, data])
-    setExpanded(prev => [...prev, data.id])
+    setExpanded(prev => (prev.includes(data.id) ? prev : [...prev, data.id]))
   }
 
   /* ---------------- TREE NODE ---------------- */
@@ -322,7 +407,6 @@ export default function InventoryPage() {
     const { attributes, listeners, setNodeRef, transform } = useDraggable({ id: node.id })
     const style = transform ? { transform: CSS.Translate.toString(transform) } : undefined
 
-    // hide only when search is active; never hide when search is blank
     if (searchVisibleSet && !searchVisibleSet.has(node.id)) return null
 
     const railColor = depth === 0 ? 'bg-indigo-500' : depth === 1 ? 'bg-indigo-300' : 'bg-slate-300'
@@ -390,7 +474,6 @@ export default function InventoryPage() {
 
   return (
     <main className="min-h-screen bg-slate-100 p-8">
-
       <input
         type="file"
         multiple
@@ -416,40 +499,59 @@ export default function InventoryPage() {
           </div>
 
           {/* DEBUG PANEL */}
-          <div className="mb-4 p-3 rounded-lg bg-slate-50 border text-sm text-slate-700">
+          <div className="mb-4 p-3 rounded-lg bg-slate-50 border text-sm text-slate-700 whitespace-pre-wrap">
             <div><b>Debug:</b> {debug}</div>
             <div><b>Property ID:</b> {property?.id}</div>
             <div><b>Locations loaded:</b> {locations.length}</div>
             <div><b>Roots found (parent_id is null):</b> {roots.length}</div>
             <div><b>Items loaded:</b> {items.length}</div>
 
-            {locations.length > 0 && roots.length === 0 && (
-              <div className="mt-2 text-red-700">
-                ⚠️ Your locations have <b>no root</b> (none with parent_id = NULL). That will make the tree look empty.
-              </div>
-            )}
-
-            <div className="mt-2 flex gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               <button
-                onClick={createRootIfNone}
+                onClick={testLocationsAccess}
                 className="text-xs bg-indigo-600 text-white px-3 py-2 rounded"
               >
-                Auto-create Root (if missing)
+                Test Locations Access
+              </button>
+
+              <button
+                onClick={createRootLocation}
+                className="text-xs bg-slate-800 text-white px-3 py-2 rounded"
+              >
+                Create Root Location
               </button>
             </div>
           </div>
 
+          {/* Breadcrumb Selection Summary */}
+          <div className="mb-4">
+            {selectionSummary.length === 0 ? (
+              <div className="text-sm text-slate-500">No locations selected.</div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {selectionSummary.map(s => (
+                  <span
+                    key={s.id}
+                    className="text-xs bg-indigo-50 text-indigo-800 px-2 py-1 rounded-full border border-indigo-100"
+                    title="Top-level selected branch"
+                  >
+                    {s.pathLabel}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* TREE */}
           {roots.length === 0 ? (
-            <div className="text-slate-500">
-              No root locations to display.
-            </div>
+            <div className="text-slate-500">No root locations to display.</div>
           ) : (
             roots.map(root => <TreeNode key={root.id} node={root} depth={0} />)
           )}
         </div>
       </DndContext>
 
+      {/* Inventory collapsible */}
       <div className="mb-4">
         <button onClick={() => setInventoryCollapsed(prev => !prev)} className="text-sm text-indigo-600">
           {inventoryCollapsed ? 'Show Inventory' : 'Hide Inventory'}
@@ -469,6 +571,7 @@ export default function InventoryPage() {
                     setPhotoTarget(item)
                     fileInputRef.current?.click()
                   }}
+                  title="Click to add photo(s)"
                 >
                   {item.photos?.length ? (
                     <img src={item.photos[0]} className="w-full h-full object-cover" />
