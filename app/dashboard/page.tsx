@@ -47,6 +47,13 @@ export default function DashboardPage() {
         .eq('property_id', prop.id)
 
       setLocations(locs ?? [])
+
+      // Auto-expand all root nodes on load
+      const rootExpanded: Record<string, boolean> = {}
+      ;(locs ?? []).forEach(l => {
+        if (l.parent_id === null) rootExpanded[l.id] = true
+      })
+      setExpanded(rootExpanded)
     }
 
     init()
@@ -86,6 +93,13 @@ export default function DashboardPage() {
       setLocations(prev => [...prev, data])
       setNewName('')
       setNewParentId(null)
+
+      // Expand parent automatically
+      if (data.parent_id) {
+        setExpanded(prev => ({ ...prev, [data.parent_id!]: true }))
+      } else {
+        setExpanded(prev => ({ ...prev, [data.id]: true }))
+      }
     }
   }
 
@@ -128,6 +142,11 @@ export default function DashboardPage() {
         l.id === draggedId ? { ...l, parent_id: newParentId } : l
       )
     )
+
+    // Expand new parent automatically
+    if (newParentId) {
+      setExpanded(prev => ({ ...prev, [newParentId]: true }))
+    }
   }
 
   const renderTree = (parent: string | null, level = 0) => {
