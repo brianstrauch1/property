@@ -47,7 +47,7 @@ export default function InventoryPage() {
         .eq('property_id', prop.id)
 
       const { data: its } = await supabase
-        .from('inventory_items')
+        .from('items')
         .select('*')
         .eq('property_id', prop.id)
 
@@ -106,7 +106,7 @@ export default function InventoryPage() {
       ]
 
       await supabase
-        .from('inventory_items')
+        .from('items')
         .update({ photos: updatedPhotos })
         .eq('id', activePhotoItem.id)
 

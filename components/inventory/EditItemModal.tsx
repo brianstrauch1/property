@@ -56,7 +56,7 @@ export default function EditItemModal({
     setSaving(true)
 
     const { data, error } = await supabase
-      .from('inventory_items')
+      .from('items')
       .update({
         name: form.name,
         description: form.description,
