@@ -14,6 +14,7 @@ interface Item {
   name: string
   location_id: string
   thumbnail_url: string | null
+  property_id: string
 }
 
 export default function InventoryPage() {
@@ -48,13 +49,13 @@ export default function InventoryPage() {
     setItems(inv || [])
   }
 
-  function renderTree(parent: string | null, depth = 0): JSX.Element[] {
+  function renderTree(parent: string | null, depth = 0) {
     const children = locations.filter(l => l.parent_id === parent)
 
     return children.flatMap(child => [
       <div
         key={child.id}
-        className="cursor-pointer py-2"
+        className="cursor-pointer py-2 hover:bg-slate-100 rounded px-2"
         style={{ marginLeft: depth * 20 }}
         onClick={() => setSelected(child.id)}
       >
@@ -79,27 +80,31 @@ export default function InventoryPage() {
         </div>
 
         <div className="border rounded p-4 space-y-4">
-          {visibleItems.map(item => (
-            <div
-              key={item.id}
-              className="border rounded p-3 flex gap-3 items-center"
-            >
-              {item.thumbnail_url && (
-                <img
-                  src={item.thumbnail_url}
-                  className="w-16 h-16 object-cover rounded"
-                />
-              )}
-
-              <div>{item.name}</div>
-            </div>
-          ))}
-
           {!selected && (
             <div className="text-gray-500">
               Select a location
             </div>
           )}
+
+          {visibleItems.map(item => (
+            <div
+              key={item.id}
+              className="border rounded p-3 flex gap-3 items-center"
+            >
+              {item.thumbnail_url ? (
+                <img
+                  src={item.thumbnail_url}
+                  className="w-16 h-16 object-cover rounded"
+                />
+              ) : (
+                <div className="w-16 h-16 bg-slate-200 rounded flex items-center justify-center text-sm text-slate-500">
+                  No Image
+                </div>
+              )}
+
+              <div>{item.name}</div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
