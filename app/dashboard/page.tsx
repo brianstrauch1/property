@@ -11,10 +11,12 @@ export default function Dashboard() {
   )
 
   const router = useRouter()
+
   const [user, setUser] = useState<any>(null)
   const [property, setProperty] = useState<any>(null)
   const [locations, setLocations] = useState<any[]>([])
   const [newLocation, setNewLocation] = useState('')
+  const [parentId, setParentId] = useState<string | null>(null)
 
   useEffect(() => {
     const init = async () => {
@@ -27,7 +29,6 @@ export default function Dashboard() {
 
       setUser(userData.user)
 
-      // Get property
       const { data: propertyData } = await supabase
         .from('properties')
         .select('*')
@@ -57,8 +58,9 @@ export default function Dashboard() {
       .insert([
         {
           name: newLocation,
-          type: 'room',
-          property_id: property.id
+          type: 'location',
+          property_id: property.id,
+          parent_id: parentId
         }
       ])
       .select()
@@ -67,7 +69,21 @@ export default function Dashboard() {
     if (data) {
       setLocations([...locations, data])
       setNewLocation('')
+      setParentId(null)
     }
+  }
+
+  const renderTree = (parent: string | null, level = 0) => {
+    return locations
+      .filter((loc) => loc.parent_id === parent)
+      .map((loc) => (
+        <div key={loc.id} style={{ marginLeft: level * 20 }}>
+          <div className="py-1">
+            {loc.name}
+          </div>
+          {renderTree(loc.id, level + 1)}
+        </div>
+      ))
   }
 
   const signOut = async () => {
@@ -97,17 +113,31 @@ export default function Dashboard() {
 
       <div className="bg-white p-6 rounded-xl shadow-md">
         <h2 className="text-xl font-semibold mb-4">
-          Locations
+          Location Hierarchy
         </h2>
 
         <div className="flex gap-2 mb-4">
           <input
             type="text"
-            placeholder="Add room (e.g., Kitchen)"
+            placeholder="New location"
             value={newLocation}
             onChange={(e) => setNewLocation(e.target.value)}
             className="border p-2 rounded w-full"
           />
+
+          <select
+            value={parentId || ''}
+            onChange={(e) => setParentId(e.target.value || null)}
+            className="border p-2 rounded"
+          >
+            <option value="">Root Level</option>
+            {locations.map((loc) => (
+              <option key={loc.id} value={loc.id}>
+                {loc.name}
+              </option>
+            ))}
+          </select>
+
           <button
             onClick={createLocation}
             className="bg-slate-700 text-white px-4 rounded"
@@ -116,13 +146,9 @@ export default function Dashboard() {
           </button>
         </div>
 
-        <ul>
-          {locations.map((loc) => (
-            <li key={loc.id} className="border-b py-2">
-              {loc.name}
-            </li>
-          ))}
-        </ul>
+        <div>
+          {renderTree(null)}
+        </div>
       </div>
     </main>
   )
