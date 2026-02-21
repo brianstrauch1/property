@@ -3,6 +3,10 @@
 import { useEffect, useState } from 'react'
 import { supabaseBrowser } from '@/lib/supabase-browser'
 
+type PropertyMember = {
+  property_id: string
+}
+
 type Item = {
   id: string
   name: string
@@ -46,7 +50,9 @@ export default function InventoryPage() {
 
       if (memErr) throw memErr
 
-      const propertyId = membership?.[0]?.property_id
+      const typedMembership = membership as PropertyMember[] | null
+      const propertyId = typedMembership?.[0]?.property_id
+
       if (!propertyId) {
         setItems([])
         return
@@ -60,7 +66,7 @@ export default function InventoryPage() {
 
       if (itemErr) throw itemErr
 
-      setItems(its ?? [])
+      setItems((its as Item[]) ?? [])
     } catch (err: any) {
       console.error('INVENTORY LOAD ERROR:', err)
       setError(err.message || 'Failed to load inventory')
