@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabaseBrowser } from '@/lib/supabase-browser'
@@ -23,23 +23,18 @@ type ItemRow = {
   photo_url: string | null
 }
 
-type PhotoRow = {
-  id: string
-  item_id: string
-  photo_url: string
-  is_primary: boolean
-}
-
 export default function InventoryPage() {
   const supabase = supabaseBrowser()
   const router = useRouter()
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [activePhotoItem, setActivePhotoItem] = useState<ItemRow | null>(null)
 
   const [property, setProperty] = useState<any>(null)
   const [locations, setLocations] = useState<LocationRow[]>([])
   const [items, setItems] = useState<ItemRow[]>([])
   const [selectedLocations, setSelectedLocations] = useState<string[]>([])
   const [editingItem, setEditingItem] = useState<ItemRow | null>(null)
-  const [photoItem, setPhotoItem] = useState<ItemRow | null>(null)
 
   useEffect(() => {
     const init = async () => {
@@ -112,6 +107,51 @@ export default function InventoryPage() {
     setEditingItem(null)
   }
 
+  const handlePhotoUpload = async (files: FileList) => {
+    if (!activePhotoItem) return
+
+    let firstUploadedUrl: string | null = null
+
+    for (let file of Array.from(files)) {
+      const filePath = `${activePhotoItem.id}/${Date.now()}-${file.name}`
+
+      const { error: uploadError } = await supabase.storage
+        .from('item-photos')
+        .upload(filePath, file)
+
+      if (uploadError) continue
+
+      const { data } = supabase.storage
+        .from('item-photos')
+        .getPublicUrl(filePath)
+
+      await supabase.from('item_photos').insert({
+        item_id: activePhotoItem.id,
+        photo_url: data.publicUrl,
+        is_primary: false,
+      })
+
+      if (!firstUploadedUrl) firstUploadedUrl = data.publicUrl
+    }
+
+    if (firstUploadedUrl) {
+      await supabase
+        .from('items')
+        .update({ photo_url: firstUploadedUrl })
+        .eq('id', activePhotoItem.id)
+
+      setItems(prev =>
+        prev.map(i =>
+          i.id === activePhotoItem.id
+            ? { ...i, photo_url: firstUploadedUrl }
+            : i
+        )
+      )
+    }
+
+    setActivePhotoItem(null)
+  }
+
   if (!property) return <div className="p-8">Loading...</div>
 
   return (
@@ -138,6 +178,17 @@ export default function InventoryPage() {
         </div>
       </div>
 
+      <input
+        type="file"
+        ref={fileInputRef}
+        multiple
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files) handlePhotoUpload(e.target.files)
+        }}
+      />
+
       {selectedLocations.length === 0 ? (
         <div className="text-center text-slate-500">
           Select location(s) to view items.
@@ -154,7 +205,8 @@ export default function InventoryPage() {
                 className="w-28 h-28 rounded-lg overflow-hidden border bg-slate-100 flex-shrink-0"
                 onClick={(e) => {
                   e.stopPropagation()
-                  setPhotoItem(item)
+                  setActivePhotoItem(item)
+                  fileInputRef.current?.click()
                 }}
               >
                 {item.photo_url ? (
@@ -218,22 +270,6 @@ export default function InventoryPage() {
           onSave={saveItem}
         />
       )}
-
-      {photoItem && (
-        <PhotoModal
-          item={photoItem}
-          onClose={() => setPhotoItem(null)}
-          onPrimaryUpdate={(url: string) => {
-            setItems(prev =>
-              prev.map(i =>
-                i.id === photoItem.id
-                  ? { ...i, photo_url: url }
-                  : i
-              )
-            )
-          }}
-        />
-      )}
     </main>
   )
 }
@@ -242,12 +278,8 @@ function EditModal({
   item,
   onClose,
   onSave,
-}: {
-  item: ItemRow
-  onClose: () => void
-  onSave: (item: ItemRow) => void
-}) {
-  const [form, setForm] = useState<ItemRow>(item)
+}: any) {
+  const [form, setForm] = useState(item)
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
@@ -312,143 +344,6 @@ function EditModal({
             className="bg-indigo-600 text-white px-4 py-2 rounded"
           >
             Save
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function PhotoModal({
-  item,
-  onClose,
-  onPrimaryUpdate,
-}: {
-  item: ItemRow
-  onClose: () => void
-  onPrimaryUpdate: (url: string) => void
-}) {
-  const supabase = supabaseBrowser()
-  const [photos, setPhotos] = useState<PhotoRow[]>([])
-
-  useEffect(() => {
-    loadPhotos()
-  }, [])
-
-  const loadPhotos = async () => {
-    const { data } = await supabase
-      .from('item_photos')
-      .select('*')
-      .eq('item_id', item.id)
-      .order('created_at', { ascending: false })
-
-    setPhotos(data ?? [])
-  }
-
-  const uploadPhotos = async (files: FileList) => {
-    for (let file of Array.from(files)) {
-      const filePath = `${item.id}/${Date.now()}-${file.name}`
-
-      await supabase.storage
-        .from('item-photos')
-        .upload(filePath, file)
-
-      const { data } = supabase.storage
-        .from('item-photos')
-        .getPublicUrl(filePath)
-
-      await supabase.from('item_photos').insert({
-        item_id: item.id,
-        photo_url: data.publicUrl,
-      })
-    }
-
-    loadPhotos()
-  }
-
-  const setPrimary = async (photo: PhotoRow) => {
-    await supabase
-      .from('item_photos')
-      .update({ is_primary: false })
-      .eq('item_id', item.id)
-
-    await supabase
-      .from('item_photos')
-      .update({ is_primary: true })
-      .eq('id', photo.id)
-
-    await supabase
-      .from('items')
-      .update({ photo_url: photo.photo_url })
-      .eq('id', item.id)
-
-    onPrimaryUpdate(photo.photo_url)
-    loadPhotos()
-  }
-
-  const deletePhoto = async (photo: PhotoRow) => {
-    await supabase
-      .from('item_photos')
-      .delete()
-      .eq('id', photo.id)
-
-    loadPhotos()
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
-      <div className="bg-white p-6 rounded-xl w-[800px] max-h-[90vh] overflow-y-auto space-y-4">
-        <h2 className="text-xl font-semibold">
-          Photo Gallery — {item.name}
-        </h2>
-
-        <input
-          type="file"
-          multiple
-          accept="image/*"
-          onChange={(e) => {
-            if (e.target.files) uploadPhotos(e.target.files)
-          }}
-        />
-
-        <div className="grid grid-cols-4 gap-4 mt-4">
-          {photos.map(photo => (
-            <div key={photo.id} className="relative group">
-              <img
-                src={photo.photo_url}
-                className="w-full h-32 object-cover rounded"
-              />
-
-              {photo.is_primary && (
-                <div className="absolute top-2 left-2 bg-indigo-600 text-white text-xs px-2 py-1 rounded">
-                  Primary
-                </div>
-              )}
-
-              <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition flex flex-col items-center justify-center gap-2">
-                <button
-                  onClick={() => setPrimary(photo)}
-                  className="bg-white text-xs px-2 py-1 rounded"
-                >
-                  Set Primary
-                </button>
-                <button
-                  onClick={() => deletePhoto(photo)}
-                  className="bg-red-600 text-white text-xs px-2 py-1 rounded"
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="flex justify-end">
-          <button
-            onClick={onClose}
-            className="bg-indigo-600 text-white px-4 py-2 rounded"
-          >
-            Close
           </button>
         </div>
       </div>
