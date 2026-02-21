@@ -1,9 +1,8 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabaseBrowser } from '@/lib/supabase-browser'
-import EditItemModal, { InventoryItem } from '@/components/inventory/EditItemModal'
 
 type LocationRow = {
   id: string
@@ -13,371 +12,168 @@ type LocationRow = {
   property_id: string
 }
 
-type ItemRow = InventoryItem & {
-  location_id: string | null
-  property_id: string
-}
-
-function ChevronRight() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M7 4l6 6-6 6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function ChevronDown() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M4 7l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-export default function InventoryPage() {
+export default function LocationsPage() {
   const supabase = supabaseBrowser()
   const router = useRouter()
 
   const [property, setProperty] = useState<{ id: string } | null>(null)
   const [locations, setLocations] = useState<LocationRow[]>([])
-  const [items, setItems] = useState<ItemRow[]>([])
   const [expanded, setExpanded] = useState<string[]>([])
-  const [selected, setSelected] = useState<string[]>([])
-  const selectedSet = useMemo(() => new Set(selected), [selected])
 
-  const [editingItem, setEditingItem] = useState<ItemRow | null>(null)
-  const [creating, setCreating] = useState(false)
-
-  // photo input for add-photo (Edit modal still handles photos; this page just opens modals)
-  const dummyRef = useRef<HTMLInputElement | null>(null)
-
-  /* ------------------------------ load ------------------------------ */
-
-  const loadAll = async (propId: string) => {
-    const { data: locs, error: locErr } = await supabase
-      .from('locations')
-      .select('*')
-      .eq('property_id', propId)
-      .order('sort_order', { ascending: true })
-
-    if (locErr) throw locErr
-    setLocations((locs ?? []) as LocationRow[])
-
-    const { data: its, error: itErr } = await supabase
-      .from('items')
-      .select('*')
-      .eq('property_id', propId)
-
-    if (itErr) throw itErr
-    setItems((its ?? []) as ItemRow[])
-  }
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [selectedParent, setSelectedParent] = useState<string | null>(null)
 
   useEffect(() => {
     const init = async () => {
-      const { data: sess } = await supabase.auth.getSession()
-      if (!sess.session?.access_token) {
-        router.push('/')
-        return
-      }
-
-      const { data: prop, error: propErr } = await supabase
+      const { data: prop } = await supabase
         .from('properties')
         .select('id')
         .limit(1)
         .single()
 
-      if (propErr || !prop?.id) return
+      if (!prop?.id) return
       setProperty(prop)
 
-      const savedExpanded = localStorage.getItem('expandedInventoryTree')
-      if (savedExpanded) setExpanded(JSON.parse(savedExpanded))
+      const { data: locs } = await supabase
+        .from('locations')
+        .select('*')
+        .eq('property_id', prop.id)
+        .order('sort_order')
 
-      await loadAll(prop.id)
+      setLocations(locs ?? [])
     }
 
     init()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  useEffect(() => {
-    localStorage.setItem('expandedInventoryTree', JSON.stringify(expanded))
-  }, [expanded])
-
-  /* ------------------------------ tree helpers ------------------------------ */
-
-  const byId = useMemo(() => {
-    const m: Record<string, LocationRow> = {}
-    for (const l of locations) m[l.id] = l
-    return m
-  }, [locations])
 
   const childrenMap = useMemo(() => {
     const map: Record<string, LocationRow[]> = {}
-    for (const loc of locations) {
-      if (!loc.parent_id) continue
-      if (!map[loc.parent_id]) map[loc.parent_id] = []
-      map[loc.parent_id].push(loc)
-    }
-    for (const k of Object.keys(map)) {
-      map[k] = map[k].slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-    }
+    locations.forEach(l => {
+      if (!l.parent_id) return
+      if (!map[l.parent_id]) map[l.parent_id] = []
+      map[l.parent_id].push(l)
+    })
     return map
   }, [locations])
 
-  const roots = useMemo(() => {
-    return locations
-      .filter(l => !l.parent_id)
-      .slice()
-      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-  }, [locations])
+  const roots = locations.filter(l => !l.parent_id)
 
-  const descendantsOf = (id: string): string[] => {
-    const result = [id]
-    const kids = childrenMap[id] || []
-    for (const k of kids) result.push(...descendantsOf(k.id))
-    return result
+  const depthColor = (depth: number) => {
+    if (depth === 0) return 'border-l-4 border-indigo-600'
+    if (depth === 1) return 'border-l-4 border-indigo-400 bg-indigo-50'
+    if (depth === 2) return 'border-l-4 border-sky-400 bg-sky-50'
+    return 'border-l-4 border-slate-400 bg-slate-50'
   }
 
-  /* ------------------------------ counts (direct + rollup) ------------------------------ */
-
-  const countMap = useMemo(() => {
-    const direct: Record<string, number> = {}
-    for (const it of items) {
-      if (!it.location_id) continue
-      direct[it.location_id] = (direct[it.location_id] || 0) + 1
-    }
-
-    const rollup: Record<string, number> = {}
-    const compute = (id: string): number => {
-      if (rollup[id] !== undefined) return rollup[id]
-      let total = direct[id] || 0
-      const kids = childrenMap[id] || []
-      for (const k of kids) total += compute(k.id)
-      rollup[id] = total
-      return total
-    }
-
-    locations.forEach(l => compute(l.id))
-    return rollup
-  }, [items, locations, childrenMap])
-
-  /* ------------------------------ tri-state selection ------------------------------ */
-
-  const stateFor = (id: string) => {
-    const branch = descendantsOf(id)
-    const any = branch.some(x => selectedSet.has(x))
-    const all = branch.every(x => selectedSet.has(x))
-    return { any, all, indeterminate: any && !all }
-  }
-
-  const toggleBranch = (id: string) => {
-    const branch = descendantsOf(id)
-    const { all } = stateFor(id)
-    if (all) {
-      setSelected(prev => prev.filter(x => !branch.includes(x)))
-    } else {
-      setSelected(prev => Array.from(new Set([...prev, ...branch])))
-      setExpanded(prev => (prev.includes(id) ? prev : [...prev, id]))
-    }
-  }
-
-  /* ------------------------------ items displayed ------------------------------ */
-
-  const filteredItems = useMemo(() => {
-    if (selected.length === 0) return []
-    return items.filter(i => i.location_id && selectedSet.has(i.location_id))
-  }, [items, selected, selectedSet])
-
-  /* ------------------------------ create item ------------------------------ */
-
-  const selectedSingleLocation = useMemo(() => {
-    if (selected.length !== 1) return null
-    const id = selected[0]
-    return byId[id] ?? null
-  }, [selected, byId])
-
-  const canCreateHere = useMemo(() => {
-    // Must have exactly one selected location, and it must NOT be a root.
-    if (!selectedSingleLocation) return false
-    return selectedSingleLocation.parent_id !== null
-  }, [selectedSingleLocation])
-
-  const createNewItem = async () => {
+  const createLocation = async () => {
     if (!property?.id) return
-    if (!canCreateHere || !selectedSingleLocation) return
+    if (!newName.trim()) return
 
-    setCreating(true)
-    try {
-      const { data, error } = await supabase
-        .from('items')
-        .insert({
-          property_id: property.id,
-          location_id: selectedSingleLocation.id,
-          name: 'New Item'
-        })
-        .select('*')
-        .single()
+    const { data } = await supabase
+      .from('locations')
+      .insert({
+        name: newName.trim(),
+        property_id: property.id,
+        parent_id: selectedParent
+      })
+      .select('*')
+      .single()
 
-      if (error) return alert(error.message)
-
-      const row = data as ItemRow
-      setItems(prev => [row, ...prev])
-      setEditingItem(row) // open modal to edit all attributes
-    } finally {
-      setCreating(false)
+    if (data) {
+      setLocations(prev => [...prev, data])
+      setShowAddModal(false)
+      setNewName('')
+      setSelectedParent(null)
     }
   }
 
-  /* ------------------------------ render ------------------------------ */
-
-  function TreeNode({ node, depth }: { node: LocationRow; depth: number }) {
-    const children = childrenMap[node.id] || []
-    const hasChildren = children.length > 0
+  const renderTree = (node: LocationRow, depth: number) => {
+    const children = childrenMap[node.id] ?? []
     const isOpen = expanded.includes(node.id)
-    const subtreeCount = countMap[node.id] || 0
-
-    const { any, all, indeterminate } = stateFor(node.id)
 
     return (
-      <div>
-        <div
-          className="flex items-center gap-2 py-2 px-2 rounded-lg hover:bg-slate-50"
-          style={{ marginLeft: depth * 16 }}
-          title="Select to view inventory items"
-        >
-          <button
-            className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-slate-700 rounded"
-            onClick={() => {
-              if (!hasChildren) return
-              setExpanded(prev => (prev.includes(node.id) ? prev.filter(x => x !== node.id) : [...prev, node.id]))
-            }}
-            title={hasChildren ? (isOpen ? 'Collapse' : 'Expand') : 'No children'}
-          >
-            {hasChildren ? (isOpen ? <ChevronDown /> : <ChevronRight />) : <span className="text-slate-300">•</span>}
-          </button>
-
-          <input
-            type="checkbox"
-            checked={any} // parent checks when any child is selected
-            ref={(el) => {
-              if (el) el.indeterminate = indeterminate
-            }}
-            onChange={() => toggleBranch(node.id)}
-            title="Select this location (includes children)"
-          />
-
-          <span className="text-sm font-medium text-slate-800">
-            {node.name}{' '}
-            <span className="text-slate-500 font-normal">({subtreeCount})</span>
-          </span>
-        </div>
-
-        {hasChildren && isOpen && (
-          <div className="pl-2">
-            {children.map(child => (
-              <TreeNode key={child.id} node={child} depth={depth + 1} />
-            ))}
+      <div key={node.id}>
+        <div className={`p-3 rounded ${depthColor(depth)}`}>
+          <div className="flex justify-between items-center">
+            <div className="font-medium">{node.name}</div>
+            <button
+              onClick={() =>
+                setExpanded(prev =>
+                  prev.includes(node.id)
+                    ? prev.filter(x => x !== node.id)
+                    : [...prev, node.id]
+                )
+              }
+            >
+              {children.length > 0 ? (isOpen ? '−' : '+') : ''}
+            </button>
           </div>
-        )}
+        </div>
+        {isOpen &&
+          children.map(child => renderTree(child, depth + 1))}
       </div>
     )
   }
 
-  if (!property) return <div className="p-8">Loading...</div>
+  if (!property) return null
 
   return (
-    <main className="grid grid-cols-3 gap-6">
-      <input ref={dummyRef} className="hidden" />
-
-      {/* Locations selection tree */}
+    <main className="space-y-6">
       <div className="bg-white p-6 rounded-xl shadow-md">
-        <div className="flex items-start justify-between mb-4">
-          <div>
-            <h2 className="text-xl font-bold text-slate-900">Locations</h2>
-            <div className="text-sm text-slate-500">
-              Select one or more locations to view items below.
-            </div>
-          </div>
-        </div>
-
-        {roots.map(root => (
-          <TreeNode key={root.id} node={root} depth={0} />
-        ))}
-      </div>
-
-      {/* Inventory */}
-      <div className="col-span-2 bg-white p-6 rounded-xl shadow-md">
-        <div className="flex items-start justify-between gap-3 mb-4">
-          <div>
-            <h2 className="text-xl font-bold text-slate-900">Inventory</h2>
-            <div className="text-sm text-slate-500">
-              {selected.length === 0
-                ? 'Select locations to view inventory.'
-                : `${filteredItems.length} item(s) shown.`}
-            </div>
-          </div>
-
+        <div className="flex justify-between items-center mb-4">
+          <h1 className="text-2xl font-bold">Locations</h1>
           <button
-            className={[
-              'px-3 py-2 rounded-lg text-sm',
-              canCreateHere && !creating
-                ? 'bg-indigo-600 text-white hover:bg-indigo-700'
-                : 'bg-slate-200 text-slate-500 cursor-not-allowed'
-            ].join(' ')}
-            onClick={createNewItem}
-            disabled={!canCreateHere || creating}
-            title={
-              canCreateHere
-                ? 'Add a new inventory item under the selected location'
-                : 'Select exactly one non-root location to add an item'
-            }
+            className="bg-indigo-600 text-white px-3 py-2 rounded-lg"
+            onClick={() => setShowAddModal(true)}
           >
-            + Add New Item
+            + New Location
           </button>
         </div>
 
-        {selected.length === 0 ? (
-          <div className="text-slate-600">Please select a location to view items.</div>
-        ) : filteredItems.length === 0 ? (
-          <div className="text-slate-600">No items found for the selected location(s).</div>
-        ) : (
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredItems.map(item => (
-              <div
-                key={item.id}
-                className="border rounded-lg p-3 hover:bg-slate-50 cursor-pointer"
-                onClick={() => setEditingItem(item)}
-                title="Click to edit"
-              >
-                <div className="font-semibold text-slate-900">{item.name}</div>
-                <div className="text-sm text-slate-600">
-                  <div>
-                    <span className="font-medium">Vendor:</span> {item.vendor ?? '—'}
-                  </div>
-                  <div>
-                    <span className="font-medium">Price:</span>{' '}
-                    {typeof item.price === 'number' ? `$${item.price.toFixed(2)}` : '—'}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        {roots.map(root => renderTree(root, 0))}
       </div>
 
-      {editingItem && (
-        <EditItemModal
-          item={editingItem}
-          onClose={() => setEditingItem(null)}
-          onUpdated={(updated) => {
-            setItems(prev => prev.map(i => (i.id === updated.id ? (updated as ItemRow) : i)))
-            setEditingItem(null)
-          }}
-          onDeleted={(id) => {
-            setItems(prev => prev.filter(i => i.id !== id))
-            setEditingItem(null)
-          }}
-        />
+      {showAddModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
+          <div className="bg-white rounded-xl p-6 w-[500px] space-y-4">
+            <h2 className="text-lg font-bold">Add New Location</h2>
+
+            <input
+              placeholder="Location Name"
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              className="w-full border px-3 py-2 rounded"
+            />
+
+            <select
+              value={selectedParent ?? ''}
+              onChange={e =>
+                setSelectedParent(e.target.value || null)
+              }
+              className="w-full border px-3 py-2 rounded"
+            >
+              <option value="">Root Level</option>
+              {locations.map(l => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
+                </option>
+              ))}
+            </select>
+
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowAddModal(false)}>
+                Cancel
+              </button>
+              <button
+                className="bg-indigo-600 text-white px-3 py-2 rounded"
+                onClick={createLocation}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   )

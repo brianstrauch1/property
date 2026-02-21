@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabaseBrowser } from '@/lib/supabase-browser'
 
 type PropertyRow = {
@@ -30,6 +30,12 @@ export default function SettingsPage() {
   const [newCategory, setNewCategory] = useState('')
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null)
   const [editingCategoryName, setEditingCategoryName] = useState('')
+
+  // section refs
+  const propertyRef = useRef<HTMLDivElement | null>(null)
+  const categoriesRef = useRef<HTMLDivElement | null>(null)
+  const financialRef = useRef<HTMLDivElement | null>(null)
+  const accessRef = useRef<HTMLDivElement | null>(null)
 
   const loadAll = async () => {
     const { data: prop } = await supabase
@@ -110,7 +116,11 @@ export default function SettingsPage() {
     const { error } = await supabase.from('categories').update({ name }).eq('id', editingCategoryId)
     if (error) return alert(error.message)
 
-    setCategories(prev => prev.map(c => (c.id === editingCategoryId ? { ...c, name } : c)).sort((a, b) => a.name.localeCompare(b.name)))
+    setCategories(prev =>
+      prev
+        .map(c => (c.id === editingCategoryId ? { ...c, name } : c))
+        .sort((a, b) => a.name.localeCompare(b.name))
+    )
     setEditingCategoryId(null)
     setEditingCategoryName('')
   }
@@ -118,7 +128,6 @@ export default function SettingsPage() {
   const deleteCategory = async (cat: Category) => {
     if (!property?.id) return
 
-    // block delete if category is referenced by any items
     const { count, error: countErr } = await supabase
       .from('items')
       .select('id', { count: 'exact', head: true })
@@ -126,9 +135,7 @@ export default function SettingsPage() {
       .eq('category_id', cat.id)
 
     if (countErr) return alert(countErr.message)
-    if ((count ?? 0) > 0) {
-      return alert(`Cannot delete category. It is used by ${count} inventory item(s).`)
-    }
+    if ((count ?? 0) > 0) return alert(`Cannot delete category. It is used by ${count} item(s).`)
 
     if (!confirm(`Delete category "${cat.name}"?`)) return
 
@@ -138,15 +145,23 @@ export default function SettingsPage() {
     setCategories(prev => prev.filter(c => c.id !== cat.id))
   }
 
+  /* ---------------- section nav ---------------- */
+
   const sections = useMemo(
     () => [
-      { key: 'property', title: 'Property Details' },
-      { key: 'categories', title: 'Item Categories' },
-      { key: 'financial', title: 'Financial Defaults' },
-      { key: 'access', title: 'Access & Roles' }
+      { key: 'property', title: 'Property Details', ref: propertyRef },
+      { key: 'categories', title: 'Item Categories', ref: categoriesRef },
+      { key: 'financial', title: 'Financial Defaults', ref: financialRef },
+      { key: 'access', title: 'Access & Roles', ref: accessRef }
     ],
     []
   )
+
+  const scrollTo = (key: string) => {
+    const s = sections.find(x => x.key === key)
+    if (!s?.ref.current) return
+    s.ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   if (!property) return <div className="p-8">Loading...</div>
 
@@ -154,19 +169,25 @@ export default function SettingsPage() {
     <main className="space-y-6">
       <div className="bg-white p-6 rounded-xl shadow-md">
         <h1 className="text-2xl font-bold text-slate-900 mb-2">Settings</h1>
-        <div className="text-sm text-slate-500">Enterprise-style sections for configuration and governance.</div>
+        <div className="text-sm text-slate-500">Configuration and governance for your property workspace.</div>
 
+        {/* Clickable pills */}
         <div className="mt-4 flex flex-wrap gap-2">
           {sections.map(s => (
-            <span key={s.key} className="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded-full">
+            <button
+              key={s.key}
+              onClick={() => scrollTo(s.key)}
+              className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-800 px-3 py-1.5 rounded-full transition-colors"
+              title={`Jump to ${s.title}`}
+            >
               {s.title}
-            </span>
+            </button>
           ))}
         </div>
       </div>
 
       {/* Property Details */}
-      <div className="bg-white p-6 rounded-xl shadow-md">
+      <div ref={propertyRef} className="bg-white p-6 rounded-xl shadow-md scroll-mt-24">
         <h2 className="text-lg font-bold text-slate-900 mb-4">Property Details</h2>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -206,7 +227,7 @@ export default function SettingsPage() {
       </div>
 
       {/* Item Categories */}
-      <div className="bg-white p-6 rounded-xl shadow-md">
+      <div ref={categoriesRef} className="bg-white p-6 rounded-xl shadow-md scroll-mt-24">
         <h2 className="text-lg font-bold text-slate-900 mb-4">Item Categories</h2>
 
         <div className="flex flex-col md:flex-row gap-2 mb-4">
@@ -266,8 +287,8 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Financial Defaults (placeholder-ready) */}
-      <div className="bg-white p-6 rounded-xl shadow-md">
+      {/* Financial Defaults */}
+      <div ref={financialRef} className="bg-white p-6 rounded-xl shadow-md scroll-mt-24">
         <h2 className="text-lg font-bold text-slate-900 mb-2">Financial Defaults</h2>
         <div className="text-sm text-slate-600 mb-4">
           Coming next: default depreciation years, warranty default months, currency display rules.
@@ -285,8 +306,8 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Access & Roles (placeholder-ready) */}
-      <div className="bg-white p-6 rounded-xl shadow-md">
+      {/* Access & Roles */}
+      <div ref={accessRef} className="bg-white p-6 rounded-xl shadow-md scroll-mt-24">
         <h2 className="text-lg font-bold text-slate-900 mb-2">Access & Roles</h2>
         <div className="text-sm text-slate-600">
           Coming next: property members, invitations, role-based access (Owner/Admin/Editor/Viewer).
