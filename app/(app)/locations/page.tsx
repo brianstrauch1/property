@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+import { useEffect, useState } from 'react'
+import { supabase } from '@/lib/supabase/client'
 
 interface Location {
   id: string
@@ -12,26 +12,29 @@ interface Location {
 }
 
 export default function LocationsPage() {
-  const supabase = createClientComponentClient()
-
   const [locations, setLocations] = useState<Location[]>([])
   const [propertyId, setPropertyId] = useState<string | null>(null)
   const [newName, setNewName] = useState('')
   const [parentId, setParentId] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
 
-  // SAFE ONE-TIME LOAD
   useEffect(() => {
     load()
   }, [])
 
   async function load() {
+    setLoading(true)
+
     const { data: property } = await supabase
       .from('properties')
       .select('id')
       .limit(1)
       .single()
 
-    if (!property) return
+    if (!property) {
+      setLoading(false)
+      return
+    }
 
     setPropertyId(property.id)
 
@@ -42,6 +45,7 @@ export default function LocationsPage() {
       .order('sort_order', { ascending: true })
 
     setLocations(data || [])
+    setLoading(false)
   }
 
   async function addLocation() {
@@ -72,7 +76,6 @@ export default function LocationsPage() {
     load()
   }
 
-  // SAFE TREE (NO RECURSION LOOP)
   function renderTree(parent: string | null, depth = 0): JSX.Element[] {
     const children = locations.filter(l => l.parent_id === parent)
 
@@ -82,9 +85,7 @@ export default function LocationsPage() {
         className="flex items-center justify-between py-2"
         style={{ marginLeft: depth * 20 }}
       >
-        <span>
-          {child.name}
-        </span>
+        <span>{child.name}</span>
 
         <button
           className="text-red-500 text-sm"
@@ -97,6 +98,8 @@ export default function LocationsPage() {
       ...renderTree(child.id, depth + 1)
     ])
   }
+
+  if (loading) return <div className="p-8">Loading...</div>
 
   return (
     <div className="p-8 space-y-6">
@@ -113,9 +116,7 @@ export default function LocationsPage() {
         <select
           className="border px-3 py-2 rounded"
           value={parentId ?? ''}
-          onChange={e =>
-            setParentId(e.target.value || null)
-          }
+          onChange={e => setParentId(e.target.value || null)}
         >
           <option value="">Root</option>
           {locations.map(l => (

@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+import { supabase } from '@/lib/supabase/client'
 
 interface Location {
   id: string
@@ -17,8 +17,6 @@ interface Item {
 }
 
 export default function InventoryPage() {
-  const supabase = createClientComponentClient()
-
   const [locations, setLocations] = useState<Location[]>([])
   const [items, setItems] = useState<Item[]>([])
   const [selected, setSelected] = useState<string | null>(null)
