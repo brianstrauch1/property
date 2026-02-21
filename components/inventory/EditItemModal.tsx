@@ -6,12 +6,20 @@ import { supabaseBrowser } from '@/lib/supabase-browser'
 export type InventoryItem = {
   id: string
   name: string
-  location_id: string | null
   property_id: string
-  category?: string | null
+  location_id: string | null
+
+  description?: string | null
   vendor?: string | null
   price?: number | null
+
+  category?: string | null
+  category_id?: string | null
+
   photos?: string[] | null
+
+  created_at?: string
+  updated_at?: string
 }
 
 type Category = { id: string; name: string }
