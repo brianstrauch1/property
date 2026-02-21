@@ -20,6 +20,7 @@ type ItemRow = {
   purchase_price: number | null
   vendor: string | null
   notes: string | null
+  photo_url: string | null
 }
 
 export default function InventoryPage() {
@@ -31,7 +32,6 @@ export default function InventoryPage() {
   const [items, setItems] = useState<ItemRow[]>([])
   const [editingItem, setEditingItem] = useState<ItemRow | null>(null)
 
-  const [filter, setFilter] = useState('')
   const [search, setSearch] = useState('')
 
   useEffect(() => {
@@ -71,21 +71,30 @@ export default function InventoryPage() {
   }, [])
 
   const filteredItems = useMemo(() => {
-    return items.filter(item => {
-      const matchesLocation = !filter || item.location_id === filter
-      const matchesSearch =
-        !search ||
-        item.name.toLowerCase().includes(search.toLowerCase()) ||
-        (item.category?.toLowerCase().includes(search.toLowerCase()) ?? false)
+    return items.filter(item =>
+      item.name.toLowerCase().includes(search.toLowerCase())
+    )
+  }, [items, search])
 
-      return matchesLocation && matchesSearch
-    })
-  }, [items, filter, search])
+  const uploadPhoto = async (file: File, itemId: string) => {
+    if (!property) return null
 
-  const deleteItem = async (id: string) => {
-    if (!confirm('Delete item?')) return
-    await supabase.from('items').delete().eq('id', id)
-    setItems(prev => prev.filter(i => i.id !== id))
+    const filePath = `${property.id}/${itemId}/${Date.now()}_${file.name}`
+
+    const { error } = await supabase.storage
+      .from('property-files')
+      .upload(filePath, file)
+
+    if (error) {
+      alert(error.message)
+      return null
+    }
+
+    const { data } = supabase.storage
+      .from('property-files')
+      .getPublicUrl(filePath)
+
+    return data.publicUrl
   }
 
   const saveItem = async () => {
@@ -93,15 +102,7 @@ export default function InventoryPage() {
 
     const { error } = await supabase
       .from('items')
-      .update({
-        name: editingItem.name,
-        category: editingItem.category,
-        quantity: editingItem.quantity,
-        purchase_price: editingItem.purchase_price,
-        vendor: editingItem.vendor,
-        notes: editingItem.notes,
-        location_id: editingItem.location_id
-      })
+      .update(editingItem)
       .eq('id', editingItem.id)
 
     if (error) {
@@ -128,53 +129,38 @@ export default function InventoryPage() {
 
       <div className="bg-white p-6 rounded-xl shadow-md">
 
-        <div className="flex gap-4 mb-4">
-          <input
-            className="border p-2 rounded w-full"
-            placeholder="Search items..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
+        <input
+          className="border p-2 rounded w-full mb-4"
+          placeholder="Search items..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
 
-          <select
-            className="border p-2 rounded"
-            value={filter}
-            onChange={e => setFilter(e.target.value)}
-          >
-            <option value="">All Locations</option>
-            {locations.map(l => (
-              <option key={l.id} value={l.id}>{l.name}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="space-y-2">
+        <div className="space-y-3">
           {filteredItems.map(item => (
             <div key={item.id} className="border rounded p-3 flex justify-between">
-              <div>
-                <div className="font-semibold">{item.name}</div>
-                <div className="text-sm text-slate-600">
-                  Qty: {item.quantity}
-                  {item.category && ` • ${item.category}`}
-                  {item.purchase_price && ` • $${item.purchase_price}`}
+              <div className="flex gap-4">
+                {item.photo_url && (
+                  <img
+                    src={item.photo_url}
+                    className="w-16 h-16 object-cover rounded"
+                  />
+                )}
+                <div>
+                  <div className="font-semibold">{item.name}</div>
+                  <div className="text-sm text-slate-600">
+                    Qty: {item.quantity}
+                    {item.purchase_price && ` • $${item.purchase_price}`}
+                  </div>
                 </div>
               </div>
 
-              <div className="flex gap-3 text-sm">
-                <button
-                  onClick={() => setEditingItem(item)}
-                  className="text-indigo-600"
-                >
-                  Edit
-                </button>
-
-                <button
-                  onClick={() => deleteItem(item.id)}
-                  className="text-red-600"
-                >
-                  Delete
-                </button>
-              </div>
+              <button
+                onClick={() => setEditingItem(item)}
+                className="text-indigo-600 text-sm"
+              >
+                Edit
+              </button>
             </div>
           ))}
         </div>
@@ -185,15 +171,26 @@ export default function InventoryPage() {
           item={editingItem}
           setItem={setEditingItem}
           save={saveItem}
+          uploadPhoto={uploadPhoto}
           cancel={() => setEditingItem(null)}
-          locations={locations}
         />
       )}
     </main>
   )
 }
 
-function EditModal({ item, setItem, save, cancel, locations }: any) {
+function EditModal({ item, setItem, save, cancel, uploadPhoto }: any) {
+
+  const handleFile = async (e: any) => {
+    const file = e.target.files[0]
+    if (!file) return
+
+    const url = await uploadPhoto(file, item.id)
+    if (!url) return
+
+    setItem({ ...item, photo_url: url })
+  }
+
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
       <div className="bg-white p-6 rounded-xl w-[500px] space-y-3">
@@ -206,51 +203,17 @@ function EditModal({ item, setItem, save, cancel, locations }: any) {
         />
 
         <input
-          className="border p-2 rounded w-full"
-          value={item.category ?? ''}
-          onChange={e => setItem({ ...item, category: e.target.value })}
+          type="file"
+          onChange={handleFile}
+          className="w-full"
         />
 
-        <input
-          type="number"
-          className="border p-2 rounded w-full"
-          value={item.quantity}
-          onChange={e => setItem({ ...item, quantity: parseInt(e.target.value) })}
-        />
-
-        <input
-          type="number"
-          className="border p-2 rounded w-full"
-          value={item.purchase_price ?? ''}
-          onChange={e =>
-            setItem({
-              ...item,
-              purchase_price: e.target.value ? parseFloat(e.target.value) : null
-            })
-          }
-        />
-
-        <select
-          className="border p-2 rounded w-full"
-          value={item.location_id ?? ''}
-          onChange={e =>
-            setItem({
-              ...item,
-              location_id: e.target.value || null
-            })
-          }
-        >
-          <option value="">No Location</option>
-          {locations.map((l: any) => (
-            <option key={l.id} value={l.id}>{l.name}</option>
-          ))}
-        </select>
-
-        <textarea
-          className="border p-2 rounded w-full"
-          value={item.notes ?? ''}
-          onChange={e => setItem({ ...item, notes: e.target.value })}
-        />
+        {item.photo_url && (
+          <img
+            src={item.photo_url}
+            className="w-32 h-32 object-cover rounded"
+          />
+        )}
 
         <div className="flex justify-end gap-3">
           <button onClick={cancel} className="text-slate-600">
