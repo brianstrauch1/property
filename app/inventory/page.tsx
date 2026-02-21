@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabaseBrowser } from '@/lib/supabase-browser'
-import EditItemModal, { InventoryItem } from '@/components/inventory/EditItemModal'
+import EditItemModal, {
+  InventoryItem
+} from '@/components/inventory/EditItemModal'
 
 type LocationRow = {
   id: string
@@ -16,14 +18,17 @@ export default function InventoryPage() {
   const router = useRouter()
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const [activePhotoItem, setActivePhotoItem] = useState<InventoryItem | null>(null)
 
   const [property, setProperty] = useState<any>(null)
   const [locations, setLocations] = useState<LocationRow[]>([])
   const [items, setItems] = useState<InventoryItem[]>([])
   const [selectedLocations, setSelectedLocations] = useState<string[]>([])
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null)
+  const [photoTarget, setPhotoTarget] = useState<InventoryItem | null>(null)
 
+  // --------------------------
+  // INITIAL LOAD
+  // --------------------------
   useEffect(() => {
     const init = async () => {
       const { data: userData } = await supabase.auth.getUser()
@@ -58,7 +63,10 @@ export default function InventoryPage() {
     init()
   }, [])
 
-  const validLocations = useMemo(
+  // --------------------------
+  // LOCATION FILTER
+  // --------------------------
+  const selectableLocations = useMemo(
     () => locations.filter(l => l.parent_id !== null),
     [locations]
   )
@@ -78,48 +86,57 @@ export default function InventoryPage() {
     )
   }, [items, selectedLocations])
 
+  // --------------------------
+  // PHOTO UPLOAD
+  // --------------------------
   const handlePhotoUpload = async (files: FileList) => {
-    if (!activePhotoItem) return
+    if (!photoTarget) return
 
     const uploadedUrls: string[] = []
 
-    for (let file of Array.from(files)) {
-      const filePath = `${activePhotoItem.id}/${Date.now()}-${file.name}`
+    for (const file of Array.from(files)) {
+      const filePath = `${photoTarget.id}/${Date.now()}-${file.name}`
 
-      const { error } = await supabase.storage
+      const { error: uploadError } = await supabase.storage
         .from('item-photos')
         .upload(filePath, file)
 
-      if (!error) {
-        const { data } = supabase.storage
-          .from('item-photos')
-          .getPublicUrl(filePath)
-
-        uploadedUrls.push(data.publicUrl)
+      if (uploadError) {
+        alert(uploadError.message)
+        return
       }
+
+      const { data } = supabase.storage
+        .from('item-photos')
+        .getPublicUrl(filePath)
+
+      uploadedUrls.push(data.publicUrl)
     }
 
-    if (uploadedUrls.length > 0) {
-      const updatedPhotos = [
-        ...(activePhotoItem.photos || []),
-        ...uploadedUrls
-      ]
+    const updatedPhotos = [
+      ...(photoTarget.photos || []),
+      ...uploadedUrls
+    ]
 
-      await supabase
-        .from('items')
-        .update({ photos: updatedPhotos })
-        .eq('id', activePhotoItem.id)
+    const { error: updateError } = await supabase
+      .from('items')
+      .update({ photos: updatedPhotos })
+      .eq('id', photoTarget.id)
 
-      setItems(prev =>
-        prev.map(i =>
-          i.id === activePhotoItem.id
-            ? { ...i, photos: updatedPhotos }
-            : i
-        )
+    if (updateError) {
+      alert(updateError.message)
+      return
+    }
+
+    setItems(prev =>
+      prev.map(i =>
+        i.id === photoTarget.id
+          ? { ...i, photos: updatedPhotos }
+          : i
       )
-    }
+    )
 
-    setActivePhotoItem(null)
+    setPhotoTarget(null)
   }
 
   if (!property) return <div className="p-8">Loading...</div>
@@ -127,37 +144,42 @@ export default function InventoryPage() {
   return (
     <main className="min-h-screen bg-slate-100 p-8">
 
+      {/* Hidden File Input */}
       <input
         type="file"
-        ref={fileInputRef}
         multiple
         accept="image/*"
+        ref={fileInputRef}
         className="hidden"
         onChange={(e) => {
           if (e.target.files) handlePhotoUpload(e.target.files)
         }}
       />
 
+      {/* LOCATION SELECTOR */}
       <div className="bg-white p-6 rounded-xl shadow-md mb-6">
-        <h1 className="text-2xl font-bold mb-4">Inventory</h1>
+        <h1 className="text-2xl font-bold mb-4">
+          Inventory
+        </h1>
 
         <div className="flex gap-2 flex-wrap">
-          {validLocations.map(l => (
+          {selectableLocations.map(loc => (
             <button
-              key={l.id}
-              onClick={() => toggleLocation(l.id)}
+              key={loc.id}
+              onClick={() => toggleLocation(loc.id)}
               className={`px-3 py-1 rounded border ${
-                selectedLocations.includes(l.id)
+                selectedLocations.includes(loc.id)
                   ? 'bg-indigo-600 text-white'
                   : 'bg-white'
               }`}
             >
-              {l.name}
+              {loc.name}
             </button>
           ))}
         </div>
       </div>
 
+      {/* INVENTORY GRID */}
       <div className="space-y-4">
         {filteredItems.map(item => (
           <div
@@ -165,11 +187,12 @@ export default function InventoryPage() {
             className="bg-white rounded-xl shadow-md p-4 flex gap-4 hover:shadow-lg transition cursor-pointer"
             onClick={() => setEditingItem(item)}
           >
+            {/* Thumbnail */}
             <div
               className="w-28 h-28 rounded-lg overflow-hidden border bg-slate-100 flex-shrink-0"
               onClick={(e) => {
                 e.stopPropagation()
-                setActivePhotoItem(item)
+                setPhotoTarget(item)
                 fileInputRef.current?.click()
               }}
             >
@@ -186,11 +209,16 @@ export default function InventoryPage() {
               )}
             </div>
 
+            {/* Details */}
             <div className="flex-1">
-              <div className="text-lg font-semibold">{item.name}</div>
+              <div className="text-lg font-semibold">
+                {item.name}
+              </div>
+
               <div className="text-sm text-slate-600">
                 ${item.price ?? 0}
               </div>
+
               <div className="text-sm text-slate-500">
                 {item.vendor ?? ''}
               </div>
@@ -199,6 +227,7 @@ export default function InventoryPage() {
         ))}
       </div>
 
+      {/* EDIT MODAL */}
       {editingItem && (
         <EditItemModal
           item={editingItem}
