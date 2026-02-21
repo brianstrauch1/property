@@ -21,12 +21,10 @@ export default function Dashboard() {
   useEffect(() => {
     const init = async () => {
       const { data: userData } = await supabase.auth.getUser()
-
       if (!userData.user) {
         router.push('/')
         return
       }
-
       setUser(userData.user)
 
       const { data: propertyData } = await supabase
@@ -73,14 +71,59 @@ export default function Dashboard() {
     }
   }
 
+  const deleteLocation = async (id: string) => {
+    const hasChildren = locations.some(loc => loc.parent_id === id)
+
+    if (hasChildren) {
+      alert('Cannot delete a location that has children.')
+      return
+    }
+
+    await supabase.from('locations').delete().eq('id', id)
+    setLocations(locations.filter(loc => loc.id !== id))
+  }
+
+  const renameLocation = async (id: string, newName: string) => {
+    if (!newName) return
+
+    await supabase
+      .from('locations')
+      .update({ name: newName })
+      .eq('id', id)
+
+    setLocations(
+      locations.map(loc =>
+        loc.id === id ? { ...loc, name: newName } : loc
+      )
+    )
+  }
+
   const renderTree = (parent: string | null, level = 0) => {
     return locations
-      .filter((loc) => loc.parent_id === parent)
-      .map((loc) => (
+      .filter(loc => loc.parent_id === parent)
+      .map(loc => (
         <div key={loc.id} style={{ marginLeft: level * 20 }}>
-          <div className="py-1">
-            {loc.name}
+          <div className="flex items-center gap-2 py-1">
+            <span>{loc.name}</span>
+
+            <button
+              onClick={() => {
+                const newName = prompt('Rename location:', loc.name)
+                if (newName) renameLocation(loc.id, newName)
+              }}
+              className="text-blue-600 text-sm"
+            >
+              Edit
+            </button>
+
+            <button
+              onClick={() => deleteLocation(loc.id)}
+              className="text-red-600 text-sm"
+            >
+              Delete
+            </button>
           </div>
+
           {renderTree(loc.id, level + 1)}
         </div>
       ))
@@ -113,7 +156,7 @@ export default function Dashboard() {
 
       <div className="bg-white p-6 rounded-xl shadow-md">
         <h2 className="text-xl font-semibold mb-4">
-          Location Hierarchy
+          Root Level Locations
         </h2>
 
         <div className="flex gap-2 mb-4">
@@ -131,7 +174,7 @@ export default function Dashboard() {
             className="border p-2 rounded"
           >
             <option value="">Root Level</option>
-            {locations.map((loc) => (
+            {locations.map(loc => (
               <option key={loc.id} value={loc.id}>
                 {loc.name}
               </option>
@@ -146,9 +189,7 @@ export default function Dashboard() {
           </button>
         </div>
 
-        <div>
-          {renderTree(null)}
-        </div>
+        {renderTree(null)}
       </div>
     </main>
   )
