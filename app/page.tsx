@@ -1,76 +1,53 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
+import { useRouter } from 'next/navigation'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
-export default function Home() {
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [message, setMessage] = useState('')
+export default function Dashboard() {
+  const [user, setUser] = useState<any>(null)
+  const router = useRouter()
 
-  const signUp = async () => {
-    const { error } = await supabase.auth.signUp({
-      email,
-      password
-    })
-    if (error) setMessage(error.message)
-    else setMessage('Check your email to confirm.')
+  useEffect(() => {
+    const checkUser = async () => {
+      const { data } = await supabase.auth.getUser()
+      if (!data.user) {
+        router.push('/')
+      } else {
+        setUser(data.user)
+      }
+    }
+
+    checkUser()
+  }, [router])
+
+  const signOut = async () => {
+    await supabase.auth.signOut()
+    router.push('/')
   }
 
-  const signIn = async () => {
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password
-    })
-    if (error) setMessage(error.message)
-    else window.location.href = '/dashboard'
-  }
+  if (!user) return <div className="p-8">Loading...</div>
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-100">
-      <div className="bg-white p-8 rounded-xl shadow-md w-96">
-        <h1 className="text-2xl font-bold text-slate-800 mb-4">
-          Property Login
+    <main className="min-h-screen bg-slate-100 p-8">
+      <div className="bg-white p-6 rounded-xl shadow-md">
+        <h1 className="text-2xl font-bold mb-4">
+          Welcome to Property Dashboard
         </h1>
 
-        <input
-          type="email"
-          placeholder="Email"
-          className="w-full p-2 mb-3 border rounded"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-        />
-
-        <input
-          type="password"
-          placeholder="Password"
-          className="w-full p-2 mb-3 border rounded"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
+        <p className="mb-4">Logged in as: {user.email}</p>
 
         <button
-          onClick={signIn}
-          className="w-full bg-indigo-600 text-white p-2 rounded mb-2"
+          onClick={signOut}
+          className="bg-indigo-600 text-white px-4 py-2 rounded"
         >
-          Sign In
+          Sign Out
         </button>
-
-        <button
-          onClick={signUp}
-          className="w-full bg-slate-700 text-white p-2 rounded"
-        >
-          Sign Up
-        </button>
-
-        {message && (
-          <p className="text-sm text-slate-600 mt-3">{message}</p>
-        )}
       </div>
     </main>
   )
