@@ -28,7 +28,7 @@ export default function Home() {
       password
     })
     if (error) setMessage(error.message)
-    else setMessage('Logged in!')
+    else window.location.href = '/dashboard'
   }
 
   return (
