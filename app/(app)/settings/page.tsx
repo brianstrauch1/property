@@ -42,10 +42,11 @@ export default function SettingsPage() {
 
       const { data: membershipData, error: memErr } =
         await supabase
-          .from<PropertyMember>('property_members')
+          .from('property_members')
           .select('property_id')
           .eq('user_id', userId)
           .limit(1)
+          .returns<PropertyMember[]>()
 
       if (memErr) throw memErr
 
@@ -58,10 +59,11 @@ export default function SettingsPage() {
 
       const { data: propData, error: propErr } =
         await supabase
-          .from<PropertyRow>('properties')
+          .from('properties')
           .select('id, name, address')
           .eq('id', propertyId)
           .limit(1)
+          .returns<PropertyRow[]>()
 
       if (propErr) throw propErr
 
@@ -87,7 +89,7 @@ export default function SettingsPage() {
     if (!property) return
 
     const { error } = await supabase
-      .from<PropertyRow>('properties')   // 🔥 CRITICAL FIX
+      .from('properties')
       .update({
         name: propName,
         address: propAddress
