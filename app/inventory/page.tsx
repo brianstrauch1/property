@@ -8,6 +8,12 @@ import { supabaseBrowser } from '@/lib/supabase-browser'
 type LocationRow = {
   id: string
   name: string
+  parent_id: string | null
+}
+
+type CategoryRow = {
+  id: string
+  name: string
 }
 
 type ItemRow = {
@@ -29,11 +35,10 @@ export default function InventoryPage() {
 
   const [property, setProperty] = useState<any>(null)
   const [locations, setLocations] = useState<LocationRow[]>([])
+  const [categories, setCategories] = useState<CategoryRow[]>([])
   const [items, setItems] = useState<ItemRow[]>([])
   const [editingItem, setEditingItem] = useState<ItemRow | null>(null)
   const [creating, setCreating] = useState(false)
-
-  const [search, setSearch] = useState('')
 
   useEffect(() => {
     const init = async () => {
@@ -54,10 +59,17 @@ export default function InventoryPage() {
 
       const { data: locs } = await supabase
         .from('locations')
-        .select('id,name')
+        .select('id,name,parent_id')
         .eq('property_id', prop.id)
 
       setLocations(locs ?? [])
+
+      const { data: cats } = await supabase
+        .from('categories')
+        .select('*')
+        .eq('property_id', prop.id)
+
+      setCategories(cats ?? [])
 
       const { data: its } = await supabase
         .from('items')
@@ -71,11 +83,9 @@ export default function InventoryPage() {
     init()
   }, [])
 
-  const filteredItems = useMemo(() => {
-    return items.filter(item =>
-      item.name.toLowerCase().includes(search.toLowerCase())
-    )
-  }, [items, search])
+  const validLocations = useMemo(() => {
+    return locations.filter(l => l.parent_id !== null)
+  }, [locations])
 
   const uploadPhoto = async (file: File, itemId: string) => {
     if (!property) return null
@@ -98,15 +108,45 @@ export default function InventoryPage() {
     return data.publicUrl
   }
 
-  const createItem = async (item: Partial<ItemRow>) => {
-    if (!property || !item.name) return
+  const ensureCategoryExists = async (categoryName: string) => {
+    if (!property || !categoryName) return
 
-    const { data, error } = await supabase
+    const existing = categories.find(
+      c => c.name.toLowerCase() === categoryName.toLowerCase()
+    )
+
+    if (existing) return
+
+    const { data } = await supabase
+      .from('categories')
+      .insert([
+        {
+          property_id: property.id,
+          name: categoryName
+        }
+      ])
+      .select()
+      .single()
+
+    if (data) {
+      setCategories(prev => [...prev, data])
+    }
+  }
+
+  const createItem = async (item: Partial<ItemRow>) => {
+    if (!property || !item.name || !item.location_id) {
+      alert('Must select a non-root location.')
+      return
+    }
+
+    await ensureCategoryExists(item.category ?? '')
+
+    const { data } = await supabase
       .from('items')
       .insert([
         {
           property_id: property.id,
-          location_id: item.location_id ?? null,
+          location_id: item.location_id,
           name: item.name,
           category: item.category ?? null,
           quantity: item.quantity ?? 1,
@@ -119,11 +159,6 @@ export default function InventoryPage() {
       .select()
       .single()
 
-    if (error) {
-      alert(error.message)
-      return
-    }
-
     setItems(prev => [data as ItemRow, ...prev])
     setCreating(false)
   }
@@ -131,15 +166,12 @@ export default function InventoryPage() {
   const saveItem = async () => {
     if (!editingItem) return
 
-    const { error } = await supabase
+    await ensureCategoryExists(editingItem.category ?? '')
+
+    await supabase
       .from('items')
       .update(editingItem)
       .eq('id', editingItem.id)
-
-    if (error) {
-      alert(error.message)
-      return
-    }
 
     setItems(prev =>
       prev.map(i => (i.id === editingItem.id ? editingItem : i))
@@ -154,7 +186,7 @@ export default function InventoryPage() {
     <main className="min-h-screen bg-slate-100 p-8">
       <TopNav />
 
-      <div className="bg-white p-6 rounded-xl shadow-md mb-6 flex justify-between items-center">
+      <div className="bg-white p-6 rounded-xl shadow-md mb-6 flex justify-between">
         <h1 className="text-2xl font-bold">Inventory</h1>
         <button
           onClick={() => setCreating(true)}
@@ -164,57 +196,42 @@ export default function InventoryPage() {
         </button>
       </div>
 
-      <div className="bg-white p-6 rounded-xl shadow-md">
-        <input
-          className="border p-2 rounded w-full mb-4"
-          placeholder="Search items..."
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-
-        <div className="space-y-3">
-          {filteredItems.map(item => (
-            <div key={item.id} className="border rounded p-3 flex justify-between">
-              <div className="flex gap-4">
-                {item.photo_url && (
-                  <img
-                    src={item.photo_url}
-                    className="w-16 h-16 object-cover rounded"
-                  />
-                )}
-                <div>
-                  <div className="font-semibold">{item.name}</div>
-                  <div className="text-sm text-slate-600">
-                    Qty: {item.quantity}
-                    {item.purchase_price && ` • $${item.purchase_price}`}
-                  </div>
-                </div>
+      <div className="bg-white p-6 rounded-xl shadow-md space-y-3">
+        {items.map(item => (
+          <div key={item.id} className="border rounded p-3 flex justify-between">
+            <div>
+              <div className="font-semibold">{item.name}</div>
+              <div className="text-sm text-slate-600">
+                Qty: {item.quantity}
+                {item.category && ` • ${item.category}`}
               </div>
-
-              <button
-                onClick={() => setEditingItem(item)}
-                className="text-indigo-600 text-sm"
-              >
-                Edit
-              </button>
             </div>
-          ))}
-        </div>
+            <button
+              onClick={() => setEditingItem(item)}
+              className="text-indigo-600 text-sm"
+            >
+              Edit
+            </button>
+          </div>
+        ))}
       </div>
 
       {creating && (
-        <CreateModal
-          locations={locations}
+        <ItemModal
+          locations={validLocations}
+          categories={categories}
           createItem={createItem}
           cancel={() => setCreating(false)}
         />
       )}
 
       {editingItem && (
-        <EditModal
+        <ItemModal
+          locations={validLocations}
+          categories={categories}
           item={editingItem}
           setItem={setEditingItem}
-          save={saveItem}
+          saveItem={saveItem}
           uploadPhoto={uploadPhoto}
           cancel={() => setEditingItem(null)}
         />
@@ -223,113 +240,138 @@ export default function InventoryPage() {
   )
 }
 
-function CreateModal({ createItem, cancel, locations }: any) {
-  const [form, setForm] = useState({
-    name: '',
-    category: '',
-    quantity: 1,
-    location_id: ''
-  })
+function ItemModal(props: any) {
+  const isEdit = !!props.item
 
-  return (
-    <Modal>
-      <h2 className="text-xl font-semibold mb-4">Add Item</h2>
-
-      <input
-        className="border p-2 rounded w-full mb-2"
-        placeholder="Name"
-        value={form.name}
-        onChange={e => setForm({ ...form, name: e.target.value })}
-      />
-
-      <input
-        className="border p-2 rounded w-full mb-2"
-        placeholder="Category"
-        value={form.category}
-        onChange={e => setForm({ ...form, category: e.target.value })}
-      />
-
-      <input
-        type="number"
-        className="border p-2 rounded w-full mb-2"
-        value={form.quantity}
-        onChange={e =>
-          setForm({ ...form, quantity: parseInt(e.target.value) })
-        }
-      />
-
-      <select
-        className="border p-2 rounded w-full mb-4"
-        value={form.location_id}
-        onChange={e =>
-          setForm({ ...form, location_id: e.target.value })
-        }
-      >
-        <option value="">No Location</option>
-        {locations.map((l: any) => (
-          <option key={l.id} value={l.id}>{l.name}</option>
-        ))}
-      </select>
-
-      <div className="flex justify-end gap-3">
-        <button onClick={cancel}>Cancel</button>
-        <button
-          onClick={() => createItem(form)}
-          className="bg-indigo-600 text-white px-4 py-2 rounded"
-        >
-          Create
-        </button>
-      </div>
-    </Modal>
+  const [form, setForm] = useState(
+    props.item ?? {
+      name: '',
+      category: '',
+      quantity: 1,
+      location_id: '',
+      purchase_price: '',
+      vendor: '',
+      notes: ''
+    }
   )
-}
 
-function EditModal({ item, setItem, save, cancel, uploadPhoto }: any) {
   const handleFile = async (e: any) => {
     const file = e.target.files[0]
-    if (!file) return
-    const url = await uploadPhoto(file, item.id)
-    if (!url) return
-    setItem({ ...item, photo_url: url })
+    if (!file || !props.uploadPhoto) return
+    const url = await props.uploadPhoto(file, form.id)
+    setForm({ ...form, photo_url: url })
   }
 
   return (
-    <Modal>
-      <h2 className="text-xl font-semibold mb-4">Edit Item</h2>
-
-      <input
-        className="border p-2 rounded w-full mb-2"
-        value={item.name}
-        onChange={e => setItem({ ...item, name: e.target.value })}
-      />
-
-      <input type="file" onChange={handleFile} className="mb-2" />
-
-      {item.photo_url && (
-        <img
-          src={item.photo_url}
-          className="w-32 h-32 object-cover rounded mb-2"
-        />
-      )}
-
-      <div className="flex justify-end gap-3">
-        <button onClick={cancel}>Cancel</button>
-        <button
-          onClick={save}
-          className="bg-indigo-600 text-white px-4 py-2 rounded"
-        >
-          Save
-        </button>
-      </div>
-    </Modal>
-  )
-}
-
-function Modal({ children }: any) {
-  return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
-      <div className="bg-white p-6 rounded-xl w-[500px]">
-        {children}
+      <div className="bg-white p-6 rounded-xl w-[550px] space-y-3">
+
+        <h2 className="text-xl font-semibold">
+          {isEdit ? 'Edit Item' : 'Add Item'}
+        </h2>
+
+        <input
+          className="border p-2 rounded w-full"
+          value={form.name}
+          onChange={e => setForm({ ...form, name: e.target.value })}
+          placeholder="Name"
+        />
+
+        <input
+          list="categories"
+          className="border p-2 rounded w-full"
+          value={form.category ?? ''}
+          onChange={e => setForm({ ...form, category: e.target.value })}
+          placeholder="Category"
+        />
+        <datalist id="categories">
+          {props.categories.map((c: any) => (
+            <option key={c.id} value={c.name} />
+          ))}
+        </datalist>
+
+        <input
+          type="number"
+          className="border p-2 rounded w-full"
+          value={form.quantity}
+          onChange={e =>
+            setForm({ ...form, quantity: parseInt(e.target.value) })
+          }
+        />
+
+        <select
+          className="border p-2 rounded w-full"
+          value={form.location_id ?? ''}
+          onChange={e =>
+            setForm({ ...form, location_id: e.target.value })
+          }
+        >
+          <option value="">Select Location</option>
+          {props.locations.map((l: any) => (
+            <option key={l.id} value={l.id}>{l.name}</option>
+          ))}
+        </select>
+
+        <input
+          type="number"
+          className="border p-2 rounded w-full"
+          value={form.purchase_price ?? ''}
+          onChange={e =>
+            setForm({
+              ...form,
+              purchase_price: e.target.value
+                ? parseFloat(e.target.value)
+                : null
+            })
+          }
+          placeholder="Purchase Price"
+        />
+
+        <input
+          className="border p-2 rounded w-full"
+          value={form.vendor ?? ''}
+          onChange={e => setForm({ ...form, vendor: e.target.value })}
+          placeholder="Vendor"
+        />
+
+        <textarea
+          className="border p-2 rounded w-full"
+          value={form.notes ?? ''}
+          onChange={e => setForm({ ...form, notes: e.target.value })}
+          placeholder="Notes"
+        />
+
+        {isEdit && (
+          <>
+            <input type="file" onChange={handleFile} />
+            {form.photo_url && (
+              <img
+                src={form.photo_url}
+                className="w-32 h-32 object-cover rounded"
+              />
+            )}
+          </>
+        )}
+
+        <div className="flex justify-end gap-3">
+          <button onClick={props.cancel}>Cancel</button>
+
+          {isEdit ? (
+            <button
+              onClick={() => props.saveItem(form)}
+              className="bg-indigo-600 text-white px-4 py-2 rounded"
+            >
+              Save
+            </button>
+          ) : (
+            <button
+              onClick={() => props.createItem(form)}
+              className="bg-indigo-600 text-white px-4 py-2 rounded"
+            >
+              Create
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )
