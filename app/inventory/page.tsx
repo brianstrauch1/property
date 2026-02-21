@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import imageCompression from 'browser-image-compression'
 import { supabaseBrowser } from '@/lib/supabase-browser'
 
 type LocationRow = {
@@ -32,7 +31,8 @@ export default function InventoryPage() {
   const [locations, setLocations] = useState<LocationRow[]>([])
   const [items, setItems] = useState<ItemRow[]>([])
   const [selectedLocations, setSelectedLocations] = useState<string[]>([])
-  const [uploadingId, setUploadingId] = useState<string | null>(null)
+  const [editingItem, setEditingItem] = useState<ItemRow | null>(null)
+  const [photoItem, setPhotoItem] = useState<ItemRow | null>(null)
 
   useEffect(() => {
     const init = async () => {
@@ -89,63 +89,10 @@ export default function InventoryPage() {
     )
   }, [items, selectedLocations])
 
-  // ===== IMAGE UPLOAD (DRAG + CLICK + COMPRESSION) =====
-
-  const handleUpload = async (
-    itemId: string,
-    file: File
-  ) => {
-    try {
-      setUploadingId(itemId)
-
-      // compress before upload
-      const compressedFile = await imageCompression(file, {
-        maxSizeMB: 1,
-        maxWidthOrHeight: 1200,
-        useWebWorker: true,
-      })
-
-      const filePath = `${itemId}-${Date.now()}.jpg`
-
-      const { error: uploadError } = await supabase.storage
-        .from('item-photos')
-        .upload(filePath, compressedFile, {
-          contentType: 'image/jpeg',
-        })
-
-      if (uploadError) throw uploadError
-
-      const { data } = supabase.storage
-        .from('item-photos')
-        .getPublicUrl(filePath)
-
-      await supabase
-        .from('items')
-        .update({ photo_url: data.publicUrl })
-        .eq('id', itemId)
-
-      setItems(prev =>
-        prev.map(i =>
-          i.id === itemId
-            ? { ...i, photo_url: data.publicUrl }
-            : i
-        )
-      )
-    } catch (err) {
-      alert('Upload failed.')
-    } finally {
-      setUploadingId(null)
-    }
-  }
-
-  const handleDrop = (
-    e: React.DragEvent,
-    itemId: string
-  ) => {
-    e.preventDefault()
-    if (e.dataTransfer.files.length > 0) {
-      handleUpload(itemId, e.dataTransfer.files[0])
-    }
+  const deleteItem = async (id: string) => {
+    if (!confirm('Delete this item?')) return
+    await supabase.from('items').delete().eq('id', id)
+    setItems(prev => prev.filter(i => i.id !== id))
   }
 
   if (!property)
@@ -182,76 +129,127 @@ export default function InventoryPage() {
           Select location(s) to view items.
         </div>
       ) : (
-        <div className="grid gap-6 md:grid-cols-3">
+        <div className="space-y-4">
           {filteredItems.map(item => (
             <div
               key={item.id}
-              className="bg-white rounded-xl shadow-md p-4"
+              className="bg-white rounded-xl shadow-md p-4 flex gap-4 hover:shadow-lg transition cursor-pointer"
+              onClick={() => setEditingItem(item)}
             >
+              {/* LEFT IMAGE */}
               <div
-                className="relative w-full h-48 rounded-lg overflow-hidden border bg-slate-100 cursor-pointer group transition-all duration-200 hover:shadow-lg"
-                onDragOver={e => e.preventDefault()}
-                onDrop={e => handleDrop(e, item.id)}
-                onClick={() =>
-                  document
-                    .getElementById(`file-${item.id}`)
-                    ?.click()
-                }
+                className="w-28 h-28 rounded-lg overflow-hidden border bg-slate-100 relative group flex-shrink-0"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setPhotoItem(item)
+                }}
               >
                 {item.photo_url ? (
                   <img
                     src={item.photo_url}
-                    className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                    className="w-full h-full object-cover"
                   />
                 ) : (
                   <img
                     src="/no-image.jpg"
-                    className="w-full h-full object-contain p-6 opacity-50"
+                    className="w-full h-full object-contain p-4 opacity-60"
                   />
                 )}
 
-                {/* Hover Overlay */}
-                <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition duration-200 flex items-center justify-center">
-                  <span className="text-white opacity-0 group-hover:opacity-100 transition text-sm font-medium">
-                    Click or Drop Photo
+                <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition flex items-center justify-center">
+                  <span className="text-white text-xs opacity-0 group-hover:opacity-100 transition">
+                    Manage Photos
                   </span>
                 </div>
 
-                {/* Camera Badge */}
-                <div className="absolute top-2 right-2 bg-indigo-600 text-white text-xs px-2 py-1 rounded-full shadow">
+                <div className="absolute top-2 right-2 bg-indigo-600 text-white text-xs px-2 py-1 rounded-full">
                   📷
                 </div>
-
-                {uploadingId === item.id && (
-                  <div className="absolute inset-0 bg-white bg-opacity-70 flex items-center justify-center text-sm font-medium">
-                    Uploading...
-                  </div>
-                )}
               </div>
 
-              <input
-                id={`file-${item.id}`}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={e => {
-                  if (e.target.files?.[0]) {
-                    handleUpload(
-                      item.id,
-                      e.target.files[0]
-                    )
-                  }
-                }}
-              />
+              {/* RIGHT DETAILS */}
+              <div className="flex-1">
+                <div className="text-lg font-semibold">
+                  {item.name}
+                </div>
 
-              <div className="mt-3 font-semibold">
-                {item.name}
-              </div>
-              <div className="text-sm text-slate-600">
-                {item.category}
+                <div className="text-sm text-slate-600 mt-1">
+                  Category: {item.category ?? '—'}
+                </div>
+
+                <div className="text-sm text-slate-600">
+                  Vendor: {item.vendor ?? '—'}
+                </div>
+
+                <div className="text-sm text-slate-600">
+                  Price: $
+                  {item.purchase_price ?? 0}
+                </div>
+
+                <div className="flex gap-4 mt-3 text-sm">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setEditingItem(item)
+                    }}
+                    className="text-indigo-600"
+                  >
+                    Edit
+                  </button>
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      deleteItem(item.id)
+                    }}
+                    className="text-red-600"
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Edit Modal Placeholder */}
+      {editingItem && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
+          <div className="bg-white p-6 rounded-xl w-[600px]">
+            <h2 className="text-xl font-semibold mb-4">
+              Edit Item
+            </h2>
+            <div>{editingItem.name}</div>
+            <div className="mt-4 flex justify-end">
+              <button
+                onClick={() => setEditingItem(null)}
+                className="bg-indigo-600 text-white px-4 py-2 rounded"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Photo Modal Placeholder */}
+      {photoItem && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
+          <div className="bg-white p-6 rounded-xl w-[600px]">
+            <h2 className="text-xl font-semibold mb-4">
+              Manage Photos
+            </h2>
+            <div>{photoItem.name}</div>
+            <div className="mt-4 flex justify-end">
+              <button
+                onClick={() => setPhotoItem(null)}
+                className="bg-indigo-600 text-white px-4 py-2 rounded"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </main>
@@ -262,12 +260,7 @@ function TopNav() {
   return (
     <div className="flex gap-4 mb-6">
       <Link href="/dashboard">Locations</Link>
-      <Link
-        href="/inventory"
-        className="font-semibold"
-      >
-        Inventory
-      </Link>
+      <Link href="/inventory" className="font-semibold">Inventory</Link>
       <Link href="/analytics">Analytics</Link>
       <Link href="/settings">Settings</Link>
     </div>
