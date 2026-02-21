@@ -12,6 +12,7 @@ type LocationRow = {
   name: string
   parent_id: string | null
   sort_order?: number | null
+  property_id?: string
 }
 
 type CtxMenu = {
@@ -29,7 +30,6 @@ export default function InventoryPage() {
   const [property, setProperty] = useState<any>(null)
   const [locations, setLocations] = useState<LocationRow[]>([])
   const [items, setItems] = useState<InventoryItem[]>([])
-
   const [selected, setSelected] = useState<string[]>([])
   const [expanded, setExpanded] = useState<string[]>([])
   const [inventoryCollapsed, setInventoryCollapsed] = useState(false)
@@ -46,36 +46,56 @@ export default function InventoryPage() {
   // context menu
   const [ctx, setCtx] = useState<CtxMenu>({ open: false, x: 0, y: 0, locationId: null })
 
+  // debug
+  const [debug, setDebug] = useState<string>('')
+
   /* ---------------- INIT ---------------- */
 
   useEffect(() => {
     const init = async () => {
-      const { data: userData } = await supabase.auth.getUser()
-      if (!userData.user) {
+      setDebug('Initializing…')
+
+      const { data: userData, error: userErr } = await supabase.auth.getUser()
+      if (userErr) setDebug(`auth.getUser error: ${userErr.message}`)
+      if (!userData?.user) {
         router.push('/')
         return
       }
 
-      const { data: prop } = await supabase.from('properties').select('*').limit(1).single()
-      if (!prop) return
+      const { data: prop, error: propErr } = await supabase
+        .from('properties')
+        .select('*')
+        .limit(1)
+        .single()
+
+      if (propErr) setDebug(`properties error: ${propErr.message}`)
+      if (!prop) {
+        setDebug('No property returned from properties table.')
+        return
+      }
       setProperty(prop)
 
-      const { data: locs } = await supabase
+      const { data: locs, error: locErr } = await supabase
         .from('locations')
         .select('*')
         .eq('property_id', prop.id)
         .order('sort_order', { ascending: true })
 
-      const { data: its } = await supabase
+      if (locErr) setDebug(`locations error: ${locErr.message}`)
+      setLocations(locs ?? [])
+
+      const { data: its, error: itemsErr } = await supabase
         .from('items')
         .select('*')
         .eq('property_id', prop.id)
 
-      setLocations(locs ?? [])
+      if (itemsErr) setDebug(`items error: ${itemsErr.message}`)
       setItems(its ?? [])
 
       const savedExpanded = localStorage.getItem('expandedTree')
       if (savedExpanded) setExpanded(JSON.parse(savedExpanded))
+
+      setDebug('Loaded.')
     }
 
     init()
@@ -84,22 +104,6 @@ export default function InventoryPage() {
   useEffect(() => {
     localStorage.setItem('expandedTree', JSON.stringify(expanded))
   }, [expanded])
-
-  // close ctx menu on click/escape/scroll
-  useEffect(() => {
-    const close = () => setCtx(prev => ({ ...prev, open: false, locationId: null }))
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close()
-    }
-    window.addEventListener('click', close)
-    window.addEventListener('scroll', close, true)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('click', close)
-      window.removeEventListener('scroll', close, true)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [])
 
   /* ---------------- MAPS / HELPERS ---------------- */
 
@@ -116,7 +120,6 @@ export default function InventoryPage() {
       if (!map[loc.parent_id]) map[loc.parent_id] = []
       map[loc.parent_id].push(loc)
     }
-    // stable sort
     for (const k of Object.keys(map)) {
       map[k] = map[k].slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
     }
@@ -201,59 +204,35 @@ export default function InventoryPage() {
     return items.filter(i => i.location_id && selectedSet.has(i.location_id))
   }, [items, selectedSet, selected.length])
 
-  /* ---------------- SEARCH FILTER (tree) ---------------- */
+  /* ---------------- SEARCH FILTER (safer) ---------------- */
 
   const searchLower = search.trim().toLowerCase()
-
   const matchesSearch = (loc: LocationRow) =>
     searchLower === '' ? true : loc.name.toLowerCase().includes(searchLower)
 
-  // which nodes are in-scope after search? keep nodes that match OR are ancestors of matches
   const searchVisibleSet = useMemo(() => {
     if (!searchLower) return null as Set<string> | null
     const visible = new Set<string>()
     for (const l of locations) {
       if (matchesSearch(l)) {
         ancestorsPath(l.id).forEach(id => visible.add(id))
-        // also include the node itself
         visible.add(l.id)
       }
     }
     return visible
   }, [searchLower, locations])
 
-  // auto expand paths to matches
   useEffect(() => {
     if (!searchLower) return
     const toExpand = new Set(expanded)
     for (const l of locations) {
       if (matchesSearch(l)) {
-        const path = ancestorsPath(l.id)
-        path.forEach(id => toExpand.add(id))
+        ancestorsPath(l.id).forEach(id => toExpand.add(id))
       }
     }
     setExpanded(Array.from(toExpand))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchLower])
-
-  /* ---------------- BREADCRUMB SELECTION SUMMARY ---------------- */
-
-  const selectionSummary = useMemo(() => {
-    // show only “top-most” selected nodes (don’t repeat children if parent selected)
-    const selectedIds = Array.from(new Set(selected))
-    const isDescOfAnotherSelected = (id: string) => {
-      const path = ancestorsPath(id)
-      return path.some(a => a !== id && selectedIds.includes(a))
-    }
-    const top = selectedIds.filter(id => !isDescOfAnotherSelected(id))
-
-    const labelFor = (id: string) => byId[id]?.name ?? id
-
-    return top.map(id => ({
-      id,
-      pathLabel: ancestorsPath(id).map(labelFor).join(' → ')
-    }))
-  }, [selected, byId])
 
   /* ---------------- PHOTOS ---------------- */
 
@@ -263,10 +242,8 @@ export default function InventoryPage() {
     const uploadedUrls: string[] = []
     for (const file of Array.from(files)) {
       const filePath = `${photoTarget.id}/${Date.now()}-${file.name}`
-
       const { error } = await supabase.storage.from('item-photos').upload(filePath, file)
       if (error) return alert(error.message)
-
       const { data } = supabase.storage.from('item-photos').getPublicUrl(filePath)
       uploadedUrls.push(data.publicUrl)
     }
@@ -285,9 +262,9 @@ export default function InventoryPage() {
     const { active, over } = event
     if (!over || active.id === over.id) return
 
-    // prevent cycles: cannot drop a node into its own descendant
     const activeId = String(active.id)
     const overId = String(over.id)
+
     const activeDesc = new Set(descendantsOf(activeId))
     if (activeDesc.has(overId)) return
 
@@ -298,48 +275,32 @@ export default function InventoryPage() {
     setLocations(data ?? [])
   }
 
-  /* ---------------- CONTEXT MENU ACTIONS ---------------- */
+  /* ---------------- QUICK FIX: Create a root if none exist ---------------- */
 
-  const openContextMenu = (e: React.MouseEvent, id: string) => {
-    e.preventDefault()
-    setCtx({ open: true, x: e.clientX, y: e.clientY, locationId: id })
-  }
+  const createRootIfNone = async () => {
+    if (!property) return
+    const { data: existing } = await supabase
+      .from('locations')
+      .select('id')
+      .eq('property_id', property.id)
+      .is('parent_id', null)
+      .limit(1)
 
-  const beginRename = (id: string) => {
-    setRenamingId(id)
-    setRenameValue(byId[id]?.name ?? '')
-    setCtx(prev => ({ ...prev, open: false }))
-  }
+    if (existing && existing.length > 0) {
+      alert('You already have a root location. No action needed.')
+      return
+    }
 
-  const saveRename = async () => {
-    if (!renamingId) return
-    const name = renameValue.trim()
-    if (!name) return
-
-    const { error } = await supabase.from('locations').update({ name }).eq('id', renamingId)
-    if (error) return alert(error.message)
-
-    setLocations(prev => prev.map(l => (l.id === renamingId ? { ...l, name } : l)))
-    setRenamingId(null)
-    setRenameValue('')
-  }
-
-  const addChild = async (parentId: string) => {
-    const name = prompt('New child location name?')
+    const name = prompt('Root location name? (Example: Household)')
     if (!name?.trim()) return
-
-    const maxSort = Math.max(
-      0,
-      ...(childrenMap[parentId]?.map(c => c.sort_order ?? 0) ?? [])
-    )
 
     const { data, error } = await supabase
       .from('locations')
       .insert({
         property_id: property.id,
-        parent_id: parentId,
+        parent_id: null,
         name: name.trim(),
-        sort_order: maxSort + 10
+        sort_order: 10
       })
       .select()
       .single()
@@ -347,74 +308,32 @@ export default function InventoryPage() {
     if (error) return alert(error.message)
 
     setLocations(prev => [...prev, data])
-    setExpanded(prev => (prev.includes(parentId) ? prev : [...prev, parentId]))
-    setCtx(prev => ({ ...prev, open: false }))
+    setExpanded(prev => [...prev, data.id])
   }
 
-  const deleteLocation = async (id: string) => {
-    const branch = descendantsOf(id)
-    const confirmMsg =
-      branch.length > 1
-        ? `Delete this branch (${branch.length} locations)? Items under these locations will remain but may become orphaned unless you reassign them. Continue?`
-        : `Delete this location? Items under it will remain but may become orphaned unless you reassign them. Continue?`
-
-    if (!confirm(confirmMsg)) return
-
-    // Block delete if items exist under branch (safer default)
-    const hasItems = items.some(it => it.location_id && branch.includes(it.location_id))
-    if (hasItems) {
-      alert('This branch has inventory items. Move items first, then delete.')
-      return
-    }
-
-    // delete children first
-    for (const locId of branch.slice().reverse()) {
-      const { error } = await supabase.from('locations').delete().eq('id', locId)
-      if (error) return alert(error.message)
-    }
-
-    setLocations(prev => prev.filter(l => !branch.includes(l.id)))
-    setSelected(prev => prev.filter(x => !branch.includes(x)))
-    setExpanded(prev => prev.filter(x => !branch.includes(x)))
-    setCtx(prev => ({ ...prev, open: false }))
-  }
-
-  /* ---------------- TREE NODE (with animation + droppable target) ---------------- */
+  /* ---------------- TREE NODE ---------------- */
 
   function TreeNode({ node, depth }: { node: LocationRow; depth: number }) {
     const children = childrenMap[node.id] || []
     const hasChildren = children.length > 0
     const isOpen = expanded.includes(node.id)
 
-    // draggable handle
     const { attributes, listeners, setNodeRef, transform } = useDraggable({ id: node.id })
     const style = transform ? { transform: CSS.Translate.toString(transform) } : undefined
 
-    // droppable target implemented via data-attr on wrapper: Dnd-kit uses "over" from hit-test
-    // We rely on the row container being a hit area.
-
-    // search filtering: hide nodes not in visible set (unless no search)
+    // hide only when search is active; never hide when search is blank
     if (searchVisibleSet && !searchVisibleSet.has(node.id)) return null
 
-    const railColor =
-      depth === 0 ? 'bg-indigo-500' : depth === 1 ? 'bg-indigo-300' : 'bg-slate-300'
+    const railColor = depth === 0 ? 'bg-indigo-500' : depth === 1 ? 'bg-indigo-300' : 'bg-slate-300'
 
     return (
       <div ref={setNodeRef} style={style}>
-        <div
-          onContextMenu={(e) => openContextMenu(e, node.id)}
-          className="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-slate-50 group"
-          style={{ marginLeft: depth * 14 }}
-        >
+        <div className="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-slate-50 group" style={{ marginLeft: depth * 14 }}>
           <div className={`w-1.5 h-6 ${railColor} rounded-full`} />
 
           {hasChildren ? (
             <button
-              onClick={() => {
-                setExpanded(prev =>
-                  prev.includes(node.id) ? prev.filter(x => x !== node.id) : [...prev, node.id]
-                )
-              }}
+              onClick={() => setExpanded(prev => (prev.includes(node.id) ? prev.filter(x => x !== node.id) : [...prev, node.id]))}
               className="text-xs text-slate-500 w-6"
               title="Expand/collapse"
             >
@@ -433,30 +352,9 @@ export default function InventoryPage() {
             onChange={() => toggleSelectBranch(node.id)}
           />
 
-          {renamingId === node.id ? (
-            <input
-              value={renameValue}
-              autoFocus
-              onChange={(e) => setRenameValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') saveRename()
-                if (e.key === 'Escape') {
-                  setRenamingId(null)
-                  setRenameValue('')
-                }
-              }}
-              onBlur={saveRename}
-              className="border rounded px-2 py-1 text-sm w-56"
-            />
-          ) : (
-            <span className={`text-sm ${depth === 0 ? 'font-semibold text-slate-800' : 'text-slate-700'}`}>
-              {node.name}
-            </span>
-          )}
+          <span className={`text-sm ${depth === 0 ? 'font-semibold text-slate-800' : 'text-slate-700'}`}>{node.name}</span>
 
-          <span className="text-xs bg-slate-200 px-2 py-0.5 rounded-full ml-2">
-            {countMap[node.id] || 0}
-          </span>
+          <span className="text-xs bg-slate-200 px-2 py-0.5 rounded-full ml-2">{countMap[node.id] || 0}</span>
 
           <div
             {...listeners}
@@ -468,7 +366,6 @@ export default function InventoryPage() {
           </div>
         </div>
 
-        {/* animated expand/collapse container */}
         <div
           className="overflow-hidden transition-[max-height,opacity] duration-300 ease-in-out"
           style={{
@@ -493,7 +390,6 @@ export default function InventoryPage() {
   return (
     <main className="min-h-screen bg-slate-100 p-8">
 
-      {/* hidden file input for photo upload */}
       <input
         type="file"
         multiple
@@ -507,7 +403,7 @@ export default function InventoryPage() {
 
       <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <div className="bg-white p-6 rounded-xl shadow-md mb-6">
-          <div className="flex items-center justify-between gap-4 mb-4">
+          <div className="flex items-center justify-between gap-4 mb-3">
             <h1 className="text-2xl font-bold">Inventory Locations</h1>
 
             <input
@@ -518,65 +414,43 @@ export default function InventoryPage() {
             />
           </div>
 
-          {/* Breadcrumb Selection Summary */}
-          <div className="mb-4">
-            {selectionSummary.length === 0 ? (
-              <div className="text-sm text-slate-500">No locations selected.</div>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {selectionSummary.map(s => (
-                  <span
-                    key={s.id}
-                    className="text-xs bg-indigo-50 text-indigo-800 px-2 py-1 rounded-full border border-indigo-100"
-                    title="Top-level selected branch"
-                  >
-                    {s.pathLabel}
-                  </span>
-                ))}
+          {/* DEBUG PANEL */}
+          <div className="mb-4 p-3 rounded-lg bg-slate-50 border text-sm text-slate-700">
+            <div><b>Debug:</b> {debug}</div>
+            <div><b>Property ID:</b> {property?.id}</div>
+            <div><b>Locations loaded:</b> {locations.length}</div>
+            <div><b>Roots found (parent_id is null):</b> {roots.length}</div>
+            <div><b>Items loaded:</b> {items.length}</div>
+
+            {locations.length > 0 && roots.length === 0 && (
+              <div className="mt-2 text-red-700">
+                ⚠️ Your locations have <b>no root</b> (none with parent_id = NULL). That will make the tree look empty.
               </div>
             )}
+
+            <div className="mt-2 flex gap-2">
+              <button
+                onClick={createRootIfNone}
+                className="text-xs bg-indigo-600 text-white px-3 py-2 rounded"
+              >
+                Auto-create Root (if missing)
+              </button>
+            </div>
           </div>
 
-          {/* Tree */}
-          {roots.map(root => (
-            <TreeNode key={root.id} node={root} depth={0} />
-          ))}
+          {/* TREE */}
+          {roots.length === 0 ? (
+            <div className="text-slate-500">
+              No root locations to display.
+            </div>
+          ) : (
+            roots.map(root => <TreeNode key={root.id} node={root} depth={0} />)
+          )}
         </div>
       </DndContext>
 
-      {/* Right-click context menu */}
-      {ctx.open && ctx.locationId && (
-        <div
-          className="fixed z-50 bg-white border rounded-xl shadow-lg w-52 overflow-hidden"
-          style={{ left: ctx.x, top: ctx.y }}
-        >
-          <button
-            className="w-full text-left px-4 py-2 hover:bg-slate-50 text-sm"
-            onClick={() => beginRename(ctx.locationId!)}
-          >
-            Rename
-          </button>
-          <button
-            className="w-full text-left px-4 py-2 hover:bg-slate-50 text-sm"
-            onClick={() => addChild(ctx.locationId!)}
-          >
-            Add Child
-          </button>
-          <button
-            className="w-full text-left px-4 py-2 hover:bg-slate-50 text-sm text-red-600"
-            onClick={() => deleteLocation(ctx.locationId!)}
-          >
-            Delete
-          </button>
-        </div>
-      )}
-
-      {/* Inventory collapsible */}
       <div className="mb-4">
-        <button
-          onClick={() => setInventoryCollapsed(prev => !prev)}
-          className="text-sm text-indigo-600"
-        >
+        <button onClick={() => setInventoryCollapsed(prev => !prev)} className="text-sm text-indigo-600">
           {inventoryCollapsed ? 'Show Inventory' : 'Hide Inventory'}
         </button>
       </div>
@@ -588,14 +462,12 @@ export default function InventoryPage() {
           ) : (
             filteredItems.map(item => (
               <div key={item.id} className="bg-white rounded-xl shadow-md p-4 flex gap-4">
-                {/* image area */}
                 <div
                   className="w-24 h-24 border rounded bg-slate-100 cursor-pointer"
                   onClick={() => {
                     setPhotoTarget(item)
                     fileInputRef.current?.click()
                   }}
-                  title="Click to add photo(s)"
                 >
                   {item.photos?.length ? (
                     <img src={item.photos[0]} className="w-full h-full object-cover" />
@@ -604,7 +476,6 @@ export default function InventoryPage() {
                   )}
                 </div>
 
-                {/* details -> click to edit */}
                 <div className="flex-1 cursor-pointer" onClick={() => setEditingItem(item)}>
                   <div className="font-semibold text-slate-800">{item.name}</div>
                   <div className="text-sm text-slate-500">{item.vendor ?? ''}</div>
@@ -631,9 +502,7 @@ export default function InventoryPage() {
         <EditItemModal
           item={editingItem}
           onClose={() => setEditingItem(null)}
-          onUpdated={(updated) => {
-            setItems(prev => prev.map(i => (i.id === updated.id ? updated : i)))
-          }}
+          onUpdated={(updated) => setItems(prev => prev.map(i => (i.id === updated.id ? updated : i)))}
           onDeleted={(id) => setItems(prev => prev.filter(i => i.id !== id))}
         />
       )}
