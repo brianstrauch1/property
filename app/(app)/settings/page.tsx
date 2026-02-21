@@ -40,35 +40,34 @@ export default function SettingsPage() {
 
       const userId = session.user.id
 
-      const { data: membershipData, error: memErr } = await supabase
-        .from('property_members')
-        .select('property_id')
-        .eq('user_id', userId)
-        .limit(1)
+      const { data: membershipData, error: memErr } =
+        await supabase
+          .from<PropertyMember>('property_members')
+          .select('property_id')
+          .eq('user_id', userId)
+          .limit(1)
 
       if (memErr) throw memErr
 
-      const membership =
-        membershipData as PropertyMember[] | null
-
       const propertyId =
-        membership && membership.length > 0
-          ? membership[0].property_id
+        membershipData && membershipData.length > 0
+          ? membershipData[0].property_id
           : null
 
       if (!propertyId) return
 
-      const { data: propData, error: propErr } = await supabase
-        .from('properties')
-        .select('id, name, address')
-        .eq('id', propertyId)
-        .limit(1)
+      const { data: propData, error: propErr } =
+        await supabase
+          .from<PropertyRow>('properties')
+          .select('id, name, address')
+          .eq('id', propertyId)
+          .limit(1)
 
       if (propErr) throw propErr
 
       const prop =
         propData && propData.length > 0
-          ? (propData[0] as PropertyRow)
+          ? propData[0]
           : null
 
       if (!prop?.id) return
@@ -87,14 +86,12 @@ export default function SettingsPage() {
   async function save() {
     if (!property) return
 
-    const updatePayload: Partial<PropertyRow> = {
-      name: propName,
-      address: propAddress
-    }
-
     const { error } = await supabase
-      .from('properties')
-      .update(updatePayload as any)   // 🔥 explicit override
+      .from<PropertyRow>('properties')   // 🔥 CRITICAL FIX
+      .update({
+        name: propName,
+        address: propAddress
+      })
       .eq('id', property.id)
 
     if (error) {
