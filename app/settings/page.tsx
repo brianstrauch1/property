@@ -247,6 +247,7 @@ function TopNav() {
     <div className="flex gap-4 mb-6">
       <Link href="/dashboard">Locations</Link>
       <Link href="/inventory">Inventory</Link>
+      <Link href="/analytics">Analytics</Link>
       <Link href="/settings" className="font-semibold">Settings</Link>
     </div>
   )

@@ -258,6 +258,7 @@ function TopNav() {
         Locations
       </Link>
       <Link href="/inventory">Inventory</Link>
+      <Link href="/analytics">Analytics</Link>
       <Link href="/settings">Settings</Link>
     </div>
   )
