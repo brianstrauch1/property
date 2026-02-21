@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import { supabase } from '@/lib/supabase/client'
 
 interface Location {
@@ -49,7 +50,7 @@ export default function InventoryPage() {
     setItems(inv || [])
   }
 
-  function renderTree(parent: string | null, depth = 0) {
+  function renderTree(parent: string | null, depth = 0): ReactNode[] {
     const children = locations.filter(l => l.parent_id === parent)
 
     return children.flatMap(child => [
