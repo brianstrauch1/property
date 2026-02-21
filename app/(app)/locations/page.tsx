@@ -3,6 +3,10 @@
 import { useEffect, useState } from 'react'
 import { supabaseBrowser } from '@/lib/supabase-browser'
 
+type PropertyMember = {
+  property_id: string
+}
+
 type Location = {
   id: string
   name: string
@@ -25,12 +29,11 @@ export default function LocationsPage() {
     setError(null)
 
     try {
-      const {
-        data: { session },
-        error: sessionError
-      } = await supabase.auth.getSession()
+      const sessionResult = await supabase.auth.getSession()
 
-      if (sessionError) throw sessionError
+      if (sessionResult.error) throw sessionResult.error
+      const session = sessionResult.data.session
+
       if (!session?.user) {
         setLocations([])
         return
@@ -38,29 +41,35 @@ export default function LocationsPage() {
 
       const userId = session.user.id
 
-      const { data: membership, error: memErr } = await supabase
+      const membershipResult = await supabase
         .from('property_members')
         .select('property_id')
         .eq('user_id', userId)
         .limit(1)
 
-      if (memErr) throw memErr
+      if (membershipResult.error) throw membershipResult.error
 
-      const propertyId = membership?.[0]?.property_id
+      const membership = membershipResult.data as PropertyMember[] | null
+
+      const propertyId =
+        membership && membership.length > 0
+          ? membership[0].property_id
+          : null
+
       if (!propertyId) {
         setLocations([])
         return
       }
 
-      const { data: locs, error: locErr } = await supabase
+      const locationsResult = await supabase
         .from('locations')
         .select('id, name, parent_id')
         .eq('property_id', propertyId)
         .order('created_at', { ascending: true })
 
-      if (locErr) throw locErr
+      if (locationsResult.error) throw locationsResult.error
 
-      setLocations(locs ?? [])
+      setLocations((locationsResult.data as Location[]) ?? [])
     } catch (err: any) {
       console.error('LOCATIONS LOAD ERROR:', err)
       setError(err.message || 'Failed to load locations')

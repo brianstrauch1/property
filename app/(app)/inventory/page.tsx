@@ -29,12 +29,11 @@ export default function InventoryPage() {
     setError(null)
 
     try {
-      const {
-        data: { session },
-        error: sessionError
-      } = await supabase.auth.getSession()
+      const sessionResult = await supabase.auth.getSession()
 
-      if (sessionError) throw sessionError
+      if (sessionResult.error) throw sessionResult.error
+      const session = sessionResult.data.session
+
       if (!session?.user) {
         setItems([])
         return
@@ -42,31 +41,35 @@ export default function InventoryPage() {
 
       const userId = session.user.id
 
-      const { data: membership, error: memErr } = await supabase
+      const membershipResult = await supabase
         .from('property_members')
         .select('property_id')
         .eq('user_id', userId)
         .limit(1)
 
-      if (memErr) throw memErr
+      if (membershipResult.error) throw membershipResult.error
 
-      const typedMembership = membership as PropertyMember[] | null
-      const propertyId = typedMembership?.[0]?.property_id
+      const membership = membershipResult.data as PropertyMember[] | null
+
+      const propertyId =
+        membership && membership.length > 0
+          ? membership[0].property_id
+          : null
 
       if (!propertyId) {
         setItems([])
         return
       }
 
-      const { data: its, error: itemErr } = await supabase
+      const itemsResult = await supabase
         .from('items')
         .select('id, name, location_id')
         .eq('property_id', propertyId)
         .order('created_at', { ascending: false })
 
-      if (itemErr) throw itemErr
+      if (itemsResult.error) throw itemsResult.error
 
-      setItems((its as Item[]) ?? [])
+      setItems((itemsResult.data as Item[]) ?? [])
     } catch (err: any) {
       console.error('INVENTORY LOAD ERROR:', err)
       setError(err.message || 'Failed to load inventory')
