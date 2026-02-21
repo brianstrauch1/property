@@ -9,19 +9,27 @@ export type InventoryItem = {
   property_id: string
   location_id: string | null
 
+  // Core info
   description?: string | null
   vendor?: string | null
-  price?: number | null
-
   category?: string | null
   category_id?: string | null
 
+  // Financial
+  price?: number | null
+  purchase_date?: string | null
+  depreciation_years?: number | null
+
+  // Warranty
+  warranty_expiration?: string | null
+
+  // Media
   photos?: string[] | null
 
-  created_at?: string
-  updated_at?: string
+  // Metadata
+  created_at?: string | null
+  updated_at?: string | null
 }
-
 type Category = { id: string; name: string }
 
 interface Props {
