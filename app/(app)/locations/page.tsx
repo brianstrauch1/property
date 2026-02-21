@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { DndContext, closestCenter, useDraggable, useDroppable } from '@dnd-kit/core'
+import { CSS } from '@dnd-kit/utilities'
 import { supabaseBrowser } from '@/lib/supabase-browser'
 
 type LocationRow = {
@@ -12,17 +14,32 @@ type LocationRow = {
   property_id: string
 }
 
+function depthClasses(depth: number) {
+  if (depth === 0) return 'border-l-4 border-indigo-600'
+  if (depth === 1) return 'border-l-4 border-indigo-400 bg-indigo-50'
+  if (depth === 2) return 'border-l-4 border-sky-400 bg-sky-50'
+  return 'border-l-4 border-slate-400 bg-slate-50'
+}
+
 export default function LocationsPage() {
   const supabase = supabaseBrowser()
   const router = useRouter()
 
-  const [property, setProperty] = useState<{ id: string } | null>(null)
+  const [propertyId, setPropertyId] = useState<string | null>(null)
   const [locations, setLocations] = useState<LocationRow[]>([])
   const [expanded, setExpanded] = useState<string[]>([])
 
-  const [showAddModal, setShowAddModal] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [selectedParent, setSelectedParent] = useState<string | null>(null)
+  /* ---------------- Load ---------------- */
+
+  const loadAll = async (propId: string) => {
+    const { data } = await supabase
+      .from('locations')
+      .select('*')
+      .eq('property_id', propId)
+      .order('sort_order', { ascending: true })
+
+    setLocations((data ?? []) as LocationRow[])
+  }
 
   useEffect(() => {
     const init = async () => {
@@ -33,19 +50,20 @@ export default function LocationsPage() {
         .single()
 
       if (!prop?.id) return
-      setProperty(prop)
-
-      const { data: locs } = await supabase
-        .from('locations')
-        .select('*')
-        .eq('property_id', prop.id)
-        .order('sort_order')
-
-      setLocations(locs ?? [])
+      setPropertyId(prop.id)
+      await loadAll(prop.id)
     }
 
     init()
   }, [])
+
+  /* ---------------- Tree Helpers ---------------- */
+
+  const byId = useMemo(() => {
+    const map: Record<string, LocationRow> = {}
+    locations.forEach(l => (map[l.id] = l))
+    return map
+  }, [locations])
 
   const childrenMap = useMemo(() => {
     const map: Record<string, LocationRow[]> = {}
@@ -54,49 +72,96 @@ export default function LocationsPage() {
       if (!map[l.parent_id]) map[l.parent_id] = []
       map[l.parent_id].push(l)
     })
+    Object.keys(map).forEach(k =>
+      map[k].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+    )
     return map
   }, [locations])
 
-  const roots = locations.filter(l => !l.parent_id)
+  const roots = useMemo(() => {
+    return locations
+      .filter(l => !l.parent_id)
+      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+  }, [locations])
 
-  const depthColor = (depth: number) => {
-    if (depth === 0) return 'border-l-4 border-indigo-600'
-    if (depth === 1) return 'border-l-4 border-indigo-400 bg-indigo-50'
-    if (depth === 2) return 'border-l-4 border-sky-400 bg-sky-50'
-    return 'border-l-4 border-slate-400 bg-slate-50'
+  const descendantsOf = (id: string): string[] => {
+    const result = [id]
+    const kids = childrenMap[id] ?? []
+    for (const k of kids) result.push(...descendantsOf(k.id))
+    return result
   }
 
-  const createLocation = async () => {
-    if (!property?.id) return
-    if (!newName.trim()) return
+  /* ---------------- Drag & Drop ---------------- */
 
-    const { data } = await supabase
-      .from('locations')
-      .insert({
-        name: newName.trim(),
-        property_id: property.id,
-        parent_id: selectedParent
-      })
-      .select('*')
-      .single()
+  const handleDragEnd = async (event: any) => {
+    if (!propertyId) return
+    const { active, over } = event
+    if (!over || active.id === over.id) return
 
-    if (data) {
-      setLocations(prev => [...prev, data])
-      setShowAddModal(false)
-      setNewName('')
-      setSelectedParent(null)
+    const activeLoc = byId[active.id]
+    const overLoc = byId[over.id]
+    if (!activeLoc || !overLoc) return
+
+    // Prevent dragging into own subtree
+    const subtree = descendantsOf(active.id)
+    if (subtree.includes(over.id)) return
+
+    const newParentId = overLoc.parent_id
+    const siblings =
+      newParentId === null
+        ? roots.slice()
+        : (childrenMap[newParentId] ?? []).slice()
+
+    const filtered = siblings.filter(s => s.id !== active.id)
+    const targetIndex = filtered.findIndex(s => s.id === over.id)
+
+    filtered.splice(targetIndex >= 0 ? targetIndex : filtered.length, 0, {
+      ...activeLoc,
+      parent_id: newParentId
+    })
+
+    // Persist new ordering
+    for (let i = 0; i < filtered.length; i++) {
+      await supabase
+        .from('locations')
+        .update({
+          parent_id: filtered[i].parent_id,
+          sort_order: i + 1
+        })
+        .eq('id', filtered[i].id)
     }
+
+    await loadAll(propertyId)
   }
 
-  const renderTree = (node: LocationRow, depth: number) => {
+  /* ---------------- Tree Node ---------------- */
+
+  function TreeNode({ node, depth }: { node: LocationRow; depth: number }) {
     const children = childrenMap[node.id] ?? []
     const isOpen = expanded.includes(node.id)
 
+    const { attributes, listeners, setNodeRef, transform } = useDraggable({
+      id: node.id
+    })
+
+    const style = transform
+      ? { transform: CSS.Translate.toString(transform) }
+      : undefined
+
+    const { setNodeRef: setDropRef } = useDroppable({
+      id: node.id
+    })
+
     return (
-      <div key={node.id}>
-        <div className={`p-3 rounded ${depthColor(depth)}`}>
-          <div className="flex justify-between items-center">
-            <div className="font-medium">{node.name}</div>
+      <div ref={setNodeRef} style={style}>
+        <div
+          ref={setDropRef}
+          className={`flex items-center justify-between px-3 py-2 rounded-lg mb-1 ${depthClasses(
+            depth
+          )}`}
+          style={{ marginLeft: depth * 12 }}
+        >
+          <div className="flex items-center gap-2">
             <button
               onClick={() =>
                 setExpanded(prev =>
@@ -105,76 +170,43 @@ export default function LocationsPage() {
                     : [...prev, node.id]
                 )
               }
+              className="text-slate-500"
             >
-              {children.length > 0 ? (isOpen ? '−' : '+') : ''}
+              {children.length > 0 ? (isOpen ? '▾' : '▸') : '•'}
             </button>
+
+            <span>{node.name}</span>
+          </div>
+
+          <div
+            {...listeners}
+            {...attributes}
+            className="cursor-grab text-slate-400"
+            title="Drag to reorder"
+          >
+            ☰
           </div>
         </div>
+
         {isOpen &&
-          children.map(child => renderTree(child, depth + 1))}
+          children.map(child => (
+            <TreeNode key={child.id} node={child} depth={depth + 1} />
+          ))}
       </div>
     )
   }
 
-  if (!property) return null
+  if (!propertyId) return null
 
   return (
-    <main className="space-y-6">
-      <div className="bg-white p-6 rounded-xl shadow-md">
-        <div className="flex justify-between items-center mb-4">
-          <h1 className="text-2xl font-bold">Locations</h1>
-          <button
-            className="bg-indigo-600 text-white px-3 py-2 rounded-lg"
-            onClick={() => setShowAddModal(true)}
-          >
-            + New Location
-          </button>
-        </div>
+    <main className="bg-white p-6 rounded-xl shadow-md">
+      <h1 className="text-2xl font-bold mb-4">Locations</h1>
 
-        {roots.map(root => renderTree(root, 0))}
-      </div>
-
-      {showAddModal && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
-          <div className="bg-white rounded-xl p-6 w-[500px] space-y-4">
-            <h2 className="text-lg font-bold">Add New Location</h2>
-
-            <input
-              placeholder="Location Name"
-              value={newName}
-              onChange={e => setNewName(e.target.value)}
-              className="w-full border px-3 py-2 rounded"
-            />
-
-            <select
-              value={selectedParent ?? ''}
-              onChange={e =>
-                setSelectedParent(e.target.value || null)
-              }
-              className="w-full border px-3 py-2 rounded"
-            >
-              <option value="">Root Level</option>
-              {locations.map(l => (
-                <option key={l.id} value={l.id}>
-                  {l.name}
-                </option>
-              ))}
-            </select>
-
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setShowAddModal(false)}>
-                Cancel
-              </button>
-              <button
-                className="bg-indigo-600 text-white px-3 py-2 rounded"
-                onClick={createLocation}
-              >
-                Create
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        {roots.map(root => (
+          <TreeNode key={root.id} node={root} depth={0} />
+        ))}
+      </DndContext>
     </main>
   )
 }
