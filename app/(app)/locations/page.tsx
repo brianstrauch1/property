@@ -76,28 +76,20 @@ export default function LocationsPage() {
     load()
   }
 
-  function renderTree(parent: string | null, depth = 0): JSX.Element[] {
-    const children = locations.filter(l => l.parent_id === parent)
+function renderTree(parent: string | null, depth = 0): ReactNode[] {
+  const children = locations.filter(l => l.parent_id === parent)
 
-    return children.flatMap(child => [
-      <div
-        key={child.id}
-        className="flex items-center justify-between py-2"
-        style={{ marginLeft: depth * 20 }}
-      >
-        <span>{child.name}</span>
-
-        <button
-          className="text-red-500 text-sm"
-          onClick={() => deleteLocation(child.id)}
-        >
-          Delete
-        </button>
-      </div>,
-
-      ...renderTree(child.id, depth + 1)
-    ])
-  }
+  return children.flatMap(child => [
+    <div
+      key={child.id}
+      className="flex items-center justify-between py-2 hover:bg-slate-100 rounded px-2"
+      style={{ marginLeft: depth * 20 }}
+    >
+      <span>{child.name}</span>
+    </div>,
+    ...renderTree(child.id, depth + 1)
+  ])
+}
 
   if (loading) return <div className="p-8">Loading...</div>
 
