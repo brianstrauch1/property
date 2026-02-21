@@ -2,9 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
 import { supabaseBrowser } from '@/lib/supabase-browser'
-import EditItemModal from '@/components/inventory/EditItemModal'
+import EditItemModal, { InventoryItem } from '@/components/inventory/EditItemModal'
 
 type LocationRow = {
   id: string
@@ -12,32 +11,18 @@ type LocationRow = {
   parent_id: string | null
 }
 
-type ItemRow = {
-  id: string
-  property_id: string
-  location_id: string | null
-  name: string
-  description: string | null
-  vendor: string | null
-  price: number | null
-  category_id: string | null
-  warranty_expiration: string | null
-  depreciation_years: number | null
-  photos: string[] | null
-}
-
 export default function InventoryPage() {
   const supabase = supabaseBrowser()
   const router = useRouter()
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const [activePhotoItem, setActivePhotoItem] = useState<ItemRow | null>(null)
+  const [activePhotoItem, setActivePhotoItem] = useState<InventoryItem | null>(null)
 
   const [property, setProperty] = useState<any>(null)
   const [locations, setLocations] = useState<LocationRow[]>([])
-  const [items, setItems] = useState<ItemRow[]>([])
+  const [items, setItems] = useState<InventoryItem[]>([])
   const [selectedLocations, setSelectedLocations] = useState<string[]>([])
-  const [editingItem, setEditingItem] = useState<ItemRow | null>(null)
+  const [editingItem, setEditingItem] = useState<InventoryItem | null>(null)
 
   useEffect(() => {
     const init = async () => {
@@ -220,7 +205,9 @@ export default function InventoryPage() {
           onClose={() => setEditingItem(null)}
           onUpdated={(updated) => {
             setItems(prev =>
-              prev.map(i => (i.id === updated.id ? updated : i))
+              prev.map(i =>
+                i.id === updated.id ? updated : i
+              )
             )
           }}
         />

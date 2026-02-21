@@ -3,13 +3,10 @@
 import { useEffect, useState } from 'react'
 import { supabaseBrowser } from '@/lib/supabase-browser'
 
-type Category = {
+export type InventoryItem = {
   id: string
-  name: string
-}
-
-type Item = {
-  id: string
+  property_id: string
+  location_id: string | null
   name: string
   description: string | null
   vendor: string | null
@@ -20,14 +17,25 @@ type Item = {
   photos: string[] | null
 }
 
-interface Props {
-  item: Item
-  onClose: () => void
-  onUpdated: (updated: Item) => void
+type Category = {
+  id: string
+  name: string
 }
 
-export default function EditItemModal({ item, onClose, onUpdated }: Props) {
-  const [form, setForm] = useState<Item>(item)
+interface Props {
+  item: InventoryItem
+  onClose: () => void
+  onUpdated: (updated: InventoryItem) => void
+}
+
+export default function EditItemModal({
+  item,
+  onClose,
+  onUpdated
+}: Props) {
+  const supabase = supabaseBrowser()
+
+  const [form, setForm] = useState<InventoryItem>(item)
   const [categories, setCategories] = useState<Category[]>([])
   const [saving, setSaving] = useState(false)
 
@@ -36,7 +44,7 @@ export default function EditItemModal({ item, onClose, onUpdated }: Props) {
   }, [])
 
   async function loadCategories() {
-    const { data } = await supabaseBrowser
+    const { data } = await supabase
       .from('categories')
       .select('id,name')
       .order('name')
@@ -47,7 +55,7 @@ export default function EditItemModal({ item, onClose, onUpdated }: Props) {
   async function handleSave() {
     setSaving(true)
 
-    const { data, error } = await supabaseBrowser
+    const { data, error } = await supabase
       .from('inventory_items')
       .update({
         name: form.name,
@@ -59,14 +67,14 @@ export default function EditItemModal({ item, onClose, onUpdated }: Props) {
         depreciation_years: form.depreciation_years,
         photos: form.photos
       })
-      .eq('id', item.id)
+      .eq('id', form.id)
       .select()
       .single()
 
     setSaving(false)
 
     if (!error && data) {
-      onUpdated(data)
+      onUpdated(data as InventoryItem)
       onClose()
     }
   }
@@ -78,14 +86,14 @@ export default function EditItemModal({ item, onClose, onUpdated }: Props) {
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
-      const filePath = `${item.id}/${Date.now()}-${file.name}`
+      const filePath = `${form.id}/${Date.now()}-${file.name}`
 
-      const { error } = await supabaseBrowser.storage
+      const { error } = await supabase.storage
         .from('item-photos')
         .upload(filePath, file)
 
       if (!error) {
-        const { data } = supabaseBrowser.storage
+        const { data } = supabase.storage
           .from('item-photos')
           .getPublicUrl(filePath)
 
@@ -140,8 +148,10 @@ export default function EditItemModal({ item, onClose, onUpdated }: Props) {
             <label className="block text-sm font-medium">Price</label>
             <input
               type="number"
-              value={form.price || ''}
-              onChange={e => setForm({ ...form, price: Number(e.target.value) })}
+              value={form.price ?? ''}
+              onChange={e =>
+                setForm({ ...form, price: Number(e.target.value) })
+              }
               className="w-full border rounded p-2"
             />
           </div>
@@ -150,7 +160,9 @@ export default function EditItemModal({ item, onClose, onUpdated }: Props) {
             <label className="block text-sm font-medium">Category</label>
             <select
               value={form.category_id || ''}
-              onChange={e => setForm({ ...form, category_id: e.target.value })}
+              onChange={e =>
+                setForm({ ...form, category_id: e.target.value })
+              }
               className="w-full border rounded p-2"
             >
               <option value="">Select Category</option>
@@ -168,7 +180,10 @@ export default function EditItemModal({ item, onClose, onUpdated }: Props) {
               type="date"
               value={form.warranty_expiration || ''}
               onChange={e =>
-                setForm({ ...form, warranty_expiration: e.target.value })
+                setForm({
+                  ...form,
+                  warranty_expiration: e.target.value
+                })
               }
               className="w-full border rounded p-2"
             />
@@ -178,9 +193,12 @@ export default function EditItemModal({ item, onClose, onUpdated }: Props) {
             <label className="block text-sm font-medium">Depreciation (Years)</label>
             <input
               type="number"
-              value={form.depreciation_years || ''}
+              value={form.depreciation_years ?? ''}
               onChange={e =>
-                setForm({ ...form, depreciation_years: Number(e.target.value) })
+                setForm({
+                  ...form,
+                  depreciation_years: Number(e.target.value)
+                })
               }
               className="w-full border rounded p-2"
             />
