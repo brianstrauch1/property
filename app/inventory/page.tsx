@@ -149,7 +149,6 @@ export default function InventoryPage() {
               className="bg-white rounded-xl shadow-md p-4 flex gap-4 hover:shadow-lg transition cursor-pointer"
               onClick={() => setEditingItem(item)}
             >
-              {/* IMAGE THUMBNAIL */}
               <div
                 className="w-28 h-28 rounded-lg overflow-hidden border bg-slate-100 relative group flex-shrink-0"
                 onClick={(e) => {
@@ -168,28 +167,18 @@ export default function InventoryPage() {
                     className="w-full h-full object-contain p-4 opacity-60"
                   />
                 )}
-
-                <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition flex items-center justify-center">
-                  <span className="text-white text-xs opacity-0 group-hover:opacity-100 transition">
-                    Manage Photos
-                  </span>
-                </div>
               </div>
 
-              {/* DETAILS */}
               <div className="flex-1">
                 <div className="text-lg font-semibold">
                   {item.name}
                 </div>
-
-                <div className="text-sm text-slate-600 mt-1">
+                <div className="text-sm text-slate-600">
                   Category: {item.category ?? '—'}
                 </div>
-
                 <div className="text-sm text-slate-600">
                   Vendor: {item.vendor ?? '—'}
                 </div>
-
                 <div className="text-sm text-slate-600">
                   Price: $
                   {item.purchase_price ?? 0}
@@ -222,7 +211,6 @@ export default function InventoryPage() {
         </div>
       )}
 
-      {/* FULL EDIT MODAL */}
       {editingItem && (
         <EditModal
           item={editingItem}
@@ -231,26 +219,26 @@ export default function InventoryPage() {
         />
       )}
 
-      {/* PHOTO MANAGER MODAL */}
       {photoItem && (
         <PhotoModal
           item={photoItem}
           onClose={() => setPhotoItem(null)}
+          onPrimaryUpdate={(url) => {
+            setItems(prev =>
+              prev.map(i =>
+                i.id === photoItem.id
+                  ? { ...i, photo_url: url }
+                  : i
+              )
+            )
+          }}
         />
       )}
     </main>
   )
 }
 
-function EditModal({
-  item,
-  onClose,
-  onSave,
-}: {
-  item: ItemRow
-  onClose: () => void
-  onSave: (i: ItemRow) => void
-}) {
+function EditModal({ item, onClose, onSave }: any) {
   const [form, setForm] = useState(item)
 
   return (
@@ -310,10 +298,7 @@ function EditModal({
         />
 
         <div className="flex justify-end gap-3">
-          <button
-            onClick={onClose}
-            className="text-slate-600"
-          >
+          <button onClick={onClose}>
             Cancel
           </button>
           <button
@@ -328,30 +313,132 @@ function EditModal({
   )
 }
 
-function PhotoModal({
-  item,
-  onClose,
-}: {
-  item: ItemRow
-  onClose: () => void
-}) {
+function PhotoModal({ item, onClose, onPrimaryUpdate }: any) {
+  const supabase = supabaseBrowser()
+  const [photos, setPhotos] = useState<any[]>([])
+
+  useEffect(() => {
+    loadPhotos()
+  }, [])
+
+  const loadPhotos = async () => {
+    const { data } = await supabase
+      .from('item_photos')
+      .select('*')
+      .eq('item_id', item.id)
+      .order('created_at', { ascending: false })
+
+    setPhotos(data ?? [])
+  }
+
+  const uploadPhotos = async (files: FileList) => {
+    for (let file of Array.from(files)) {
+      const filePath = `${item.id}/${Date.now()}-${file.name}`
+
+      await supabase.storage
+        .from('item-photos')
+        .upload(filePath, file)
+
+      const { data } = supabase.storage
+        .from('item-photos')
+        .getPublicUrl(filePath)
+
+      await supabase.from('item_photos').insert({
+        item_id: item.id,
+        photo_url: data.publicUrl,
+      })
+    }
+
+    loadPhotos()
+  }
+
+  const setPrimary = async (photo: any) => {
+    await supabase
+      .from('item_photos')
+      .update({ is_primary: false })
+      .eq('item_id', item.id)
+
+    await supabase
+      .from('item_photos')
+      .update({ is_primary: true })
+      .eq('id', photo.id)
+
+    await supabase
+      .from('items')
+      .update({ photo_url: photo.photo_url })
+      .eq('id', item.id)
+
+    onPrimaryUpdate(photo.photo_url)
+    loadPhotos()
+  }
+
+  const deletePhoto = async (photo: any) => {
+    await supabase
+      .from('item_photos')
+      .delete()
+      .eq('id', photo.id)
+
+    loadPhotos()
+  }
+
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
-      <div className="bg-white p-6 rounded-xl w-[600px] space-y-4">
+      <div className="bg-white p-6 rounded-xl w-[800px] max-h-[90vh] overflow-y-auto space-y-4">
         <h2 className="text-xl font-semibold">
-          Photo Manager
+          Photo Gallery — {item.name}
         </h2>
 
-        <div className="text-slate-600">
-          Multi-photo gallery will go here next.
+        <input
+          type="file"
+          multiple
+          accept="image/*"
+          onChange={(e) => {
+            if (e.target.files) {
+              uploadPhotos(e.target.files)
+            }
+          }}
+        />
+
+        <div className="grid grid-cols-4 gap-4 mt-4">
+          {photos.map(photo => (
+            <div key={photo.id} className="relative group">
+              <img
+                src={photo.photo_url}
+                className="w-full h-32 object-cover rounded"
+              />
+
+              {photo.is_primary && (
+                <div className="absolute top-2 left-2 bg-indigo-600 text-white text-xs px-2 py-1 rounded">
+                  Primary
+                </div>
+              )}
+
+              <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition flex flex-col items-center justify-center gap-2">
+                <button
+                  onClick={() => setPrimary(photo)}
+                  className="bg-white text-xs px-2 py-1 rounded"
+                >
+                  Set Primary
+                </button>
+                <button
+                  onClick={() => deletePhoto(photo)}
+                  className="bg-red-600 text-white text-xs px-2 py-1 rounded"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
 
-        <button
-          onClick={onClose}
-          className="bg-indigo-600 text-white px-4 py-2 rounded"
-        >
-          Close
-        </button>
+        <div className="flex justify-end">
+          <button
+            onClick={onClose}
+            className="bg-indigo-600 text-white px-4 py-2 rounded"
+          >
+            Close
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -361,7 +448,9 @@ function TopNav() {
   return (
     <div className="flex gap-4 mb-6">
       <Link href="/dashboard">Locations</Link>
-      <Link href="/inventory" className="font-semibold">Inventory</Link>
+      <Link href="/inventory" className="font-semibold">
+        Inventory
+      </Link>
       <Link href="/analytics">Analytics</Link>
       <Link href="/settings">Settings</Link>
     </div>
