@@ -23,6 +23,13 @@ type ItemRow = {
   photo_url: string | null
 }
 
+type PhotoRow = {
+  id: string
+  item_id: string
+  photo_url: string
+  is_primary: boolean
+}
+
 export default function InventoryPage() {
   const supabase = supabaseBrowser()
   const router = useRouter()
@@ -96,10 +103,7 @@ export default function InventoryPage() {
   }
 
   const saveItem = async (updated: ItemRow) => {
-    await supabase
-      .from('items')
-      .update(updated)
-      .eq('id', updated.id)
+    await supabase.from('items').update(updated).eq('id', updated.id)
 
     setItems(prev =>
       prev.map(i => (i.id === updated.id ? updated : i))
@@ -108,17 +112,14 @@ export default function InventoryPage() {
     setEditingItem(null)
   }
 
-  if (!property)
-    return <div className="p-8">Loading...</div>
+  if (!property) return <div className="p-8">Loading...</div>
 
   return (
     <main className="min-h-screen bg-slate-100 p-8">
       <TopNav />
 
       <div className="bg-white p-6 rounded-xl shadow-md mb-6">
-        <h1 className="text-2xl font-bold mb-4">
-          Inventory
-        </h1>
+        <h1 className="text-2xl font-bold mb-4">Inventory</h1>
 
         <div className="flex gap-2 flex-wrap">
           {validLocations.map(l => (
@@ -150,7 +151,7 @@ export default function InventoryPage() {
               onClick={() => setEditingItem(item)}
             >
               <div
-                className="w-28 h-28 rounded-lg overflow-hidden border bg-slate-100 relative group flex-shrink-0"
+                className="w-28 h-28 rounded-lg overflow-hidden border bg-slate-100 flex-shrink-0"
                 onClick={(e) => {
                   e.stopPropagation()
                   setPhotoItem(item)
@@ -180,8 +181,7 @@ export default function InventoryPage() {
                   Vendor: {item.vendor ?? '—'}
                 </div>
                 <div className="text-sm text-slate-600">
-                  Price: $
-                  {item.purchase_price ?? 0}
+                  Price: ${item.purchase_price ?? 0}
                 </div>
 
                 <div className="flex gap-4 mt-3 text-sm">
@@ -223,7 +223,7 @@ export default function InventoryPage() {
         <PhotoModal
           item={photoItem}
           onClose={() => setPhotoItem(null)}
-          onPrimaryUpdate={(url) => {
+          onPrimaryUpdate={(url: string) => {
             setItems(prev =>
               prev.map(i =>
                 i.id === photoItem.id
@@ -238,8 +238,16 @@ export default function InventoryPage() {
   )
 }
 
-function EditModal({ item, onClose, onSave }: any) {
-  const [form, setForm] = useState(item)
+function EditModal({
+  item,
+  onClose,
+  onSave,
+}: {
+  item: ItemRow
+  onClose: () => void
+  onSave: (item: ItemRow) => void
+}) {
+  const [form, setForm] = useState<ItemRow>(item)
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
@@ -298,9 +306,7 @@ function EditModal({ item, onClose, onSave }: any) {
         />
 
         <div className="flex justify-end gap-3">
-          <button onClick={onClose}>
-            Cancel
-          </button>
+          <button onClick={onClose}>Cancel</button>
           <button
             onClick={() => onSave(form)}
             className="bg-indigo-600 text-white px-4 py-2 rounded"
@@ -313,9 +319,17 @@ function EditModal({ item, onClose, onSave }: any) {
   )
 }
 
-function PhotoModal({ item, onClose, onPrimaryUpdate }: any) {
+function PhotoModal({
+  item,
+  onClose,
+  onPrimaryUpdate,
+}: {
+  item: ItemRow
+  onClose: () => void
+  onPrimaryUpdate: (url: string) => void
+}) {
   const supabase = supabaseBrowser()
-  const [photos, setPhotos] = useState<any[]>([])
+  const [photos, setPhotos] = useState<PhotoRow[]>([])
 
   useEffect(() => {
     loadPhotos()
@@ -352,7 +366,7 @@ function PhotoModal({ item, onClose, onPrimaryUpdate }: any) {
     loadPhotos()
   }
 
-  const setPrimary = async (photo: any) => {
+  const setPrimary = async (photo: PhotoRow) => {
     await supabase
       .from('item_photos')
       .update({ is_primary: false })
@@ -372,7 +386,7 @@ function PhotoModal({ item, onClose, onPrimaryUpdate }: any) {
     loadPhotos()
   }
 
-  const deletePhoto = async (photo: any) => {
+  const deletePhoto = async (photo: PhotoRow) => {
     await supabase
       .from('item_photos')
       .delete()
@@ -393,9 +407,7 @@ function PhotoModal({ item, onClose, onPrimaryUpdate }: any) {
           multiple
           accept="image/*"
           onChange={(e) => {
-            if (e.target.files) {
-              uploadPhotos(e.target.files)
-            }
+            if (e.target.files) uploadPhotos(e.target.files)
           }}
         />
 
