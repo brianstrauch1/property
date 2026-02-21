@@ -11,12 +11,6 @@ type LocationRow = {
   sort_order: number | null
 }
 
-type CategoryRow = {
-  id: string
-  property_id: string
-  name: string
-}
-
 type ItemRow = {
   id: string
   property_id: string
@@ -28,6 +22,12 @@ type ItemRow = {
   created_at: string
 }
 
+type CategoryRow = {
+  id: string
+  property_id: string
+  name: string
+}
+
 type PhotoRow = {
   id: string
   item_id: string
@@ -36,18 +36,24 @@ type PhotoRow = {
   created_at: string
 }
 
+type DisplayRow = {
+  id: string
+  name: string
+  depth: number
+  hasChildren: boolean
+  aggCount: number
+  cycle: boolean
+}
+
 function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(' ')
 }
 
-function depthColor(depth: number) {
-  const colors = [
-    'border-indigo-600 bg-indigo-50/40',
-    'border-slate-600 bg-slate-50',
-    'border-indigo-400 bg-indigo-50/20',
-    'border-slate-400 bg-white'
-  ]
-  return colors[Math.min(depth, colors.length - 1)]
+function depthStyle(depth: number) {
+  if (depth === 0) return 'border-indigo-600 bg-indigo-50/40'
+  if (depth === 1) return 'border-slate-500 bg-slate-50'
+  if (depth === 2) return 'border-indigo-400 bg-indigo-50/20'
+  return 'border-slate-300 bg-white'
 }
 
 export default function InventoryPage() {
@@ -58,27 +64,31 @@ export default function InventoryPage() {
   const [propertyId, setPropertyId] = useState<string | null>(null)
 
   const [locations, setLocations] = useState<LocationRow[]>([])
-  const [categories, setCategories] = useState<CategoryRow[]>([])
   const [items, setItems] = useState<ItemRow[]>([])
+  const [categories, setCategories] = useState<CategoryRow[]>([])
   const [photos, setPhotos] = useState<PhotoRow[]>([])
 
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [selected, setSelected] = useState<Record<string, boolean>>({})
   const [search, setSearch] = useState('')
 
+  const [cycleIds, setCycleIds] = useState<string[]>([])
+
   // Add item modal
   const [showAdd, setShowAdd] = useState(false)
-  const [addLocationId, setAddLocationId] = useState<string>('') // required
-  const [form, setForm] = useState({
-    name: '',
-    vendor: '',
-    price: '',
-    category_id: ''
-  })
+  const [addLocationId, setAddLocationId] = useState('')
+  const [form, setForm] = useState({ name: '', vendor: '', price: '', category_id: '' })
 
-  // hidden file picker for quick photo add
+  // photo picker
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [photoTargetItem, setPhotoTargetItem] = useState<ItemRow | null>(null)
+
+  useEffect(() => {
+    loadAll()
+    const { data: sub } = supabase.auth.onAuthStateChange(() => loadAll())
+    return () => sub?.subscription?.unsubscribe()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function loadAll() {
     setLoading(true)
@@ -90,27 +100,26 @@ export default function InventoryPage() {
       if (!uid) {
         setPropertyId(null)
         setLocations([])
-        setCategories([])
         setItems([])
+        setCategories([])
         setPhotos([])
         return
       }
 
-      const { data: pm, error: pmErr } = await supabase
+      const { data: pm } = await supabase
         .from('property_members')
         .select('property_id')
         .eq('user_id', uid)
         .order('created_at', { ascending: true })
         .limit(1)
 
-      if (pmErr) throw pmErr
       const pid = pm?.[0]?.property_id ?? null
       setPropertyId(pid)
 
       if (!pid) {
         setLocations([])
-        setCategories([])
         setItems([])
+        setCategories([])
         setPhotos([])
         return
       }
@@ -144,15 +153,17 @@ export default function InventoryPage() {
       if (photoRes.error) throw photoRes.error
 
       const locs = (locRes.data as LocationRow[]) ?? []
+      const its = (itemRes.data as ItemRow[]) ?? []
+      const cats = (catRes.data as CategoryRow[]) ?? []
+      const phs = (photoRes.data as PhotoRow[]) ?? []
+
       setLocations(locs)
-      setCategories((catRes.data as CategoryRow[]) ?? [])
-      setItems((itemRes.data as ItemRow[]) ?? [])
+      setItems(its)
+      setCategories(cats)
 
-      // Only keep photos that belong to items we have (safety)
-      const itemIdSet = new Set(((itemRes.data as ItemRow[]) ?? []).map(i => i.id))
-      setPhotos((((photoRes.data as PhotoRow[]) ?? []).filter(p => itemIdSet.has(p.item_id))))
+      const itemIdSet = new Set(its.map(i => i.id))
+      setPhotos(phs.filter(p => itemIdSet.has(p.item_id)))
 
-      // expand roots
       setExpanded(prev => {
         const next = { ...prev }
         for (const l of locs) {
@@ -165,12 +176,7 @@ export default function InventoryPage() {
     }
   }
 
-  useEffect(() => {
-    loadAll()
-    const { data: sub } = supabase.auth.onAuthStateChange(() => loadAll())
-    return () => sub?.subscription?.unsubscribe()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  const byId = useMemo(() => new Map(locations.map(l => [l.id, l])), [locations])
 
   const childrenByParent = useMemo(() => {
     const map = new Map<string | null, LocationRow[]>()
@@ -186,38 +192,54 @@ export default function InventoryPage() {
     return map
   }, [locations])
 
-  const byId = useMemo(() => new Map(locations.map(l => [l.id, l])), [locations])
-
-  const directItemCountByLocation = useMemo(() => {
+  const directCountByLoc = useMemo(() => {
     const m = new Map<string, number>()
     for (const it of items) m.set(it.location_id, (m.get(it.location_id) ?? 0) + 1)
     return m
   }, [items])
 
-  const aggregateCountByLocation = useMemo(() => {
-    const agg = new Map<string, number>()
+  const aggCountByLoc = useMemo(() => {
+    const memo = new Map<string, number>()
+    const visiting = new Set<string>()
+    const cycles = new Set<string>()
+
     function dfs(id: string): number {
-      if (agg.has(id)) return agg.get(id)!
-      const direct = directItemCountByLocation.get(id) ?? 0
+      if (memo.has(id)) return memo.get(id)!
+      if (visiting.has(id)) {
+        cycles.add(id)
+        const direct = directCountByLoc.get(id) ?? 0
+        memo.set(id, direct)
+        return direct
+      }
+      visiting.add(id)
+      const direct = directCountByLoc.get(id) ?? 0
       const kids = childrenByParent.get(id) ?? []
       let sum = direct
       for (const k of kids) sum += dfs(k.id)
-      agg.set(id, sum)
+      visiting.delete(id)
+      memo.set(id, sum)
       return sum
     }
-    for (const l of locations) dfs(l.id)
-    return agg
-  }, [locations, childrenByParent, directItemCountByLocation])
 
-  const filteredIds = useMemo(() => {
+    for (const l of locations) dfs(l.id)
+    setCycleIds(Array.from(cycles))
+    return memo
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locations, childrenByParent, directCountByLoc])
+
+  const filteredKeep = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q) return null
+    if (!q) return null as Set<string> | null
+
     const keep = new Set<string>()
     for (const l of locations) if (l.name.toLowerCase().includes(q)) keep.add(l.id)
-    // include ancestors
+
     for (const id of Array.from(keep)) {
+      const seen = new Set<string>()
       let cur = byId.get(id)
       while (cur?.parent_id) {
+        if (seen.has(cur.parent_id)) break
+        seen.add(cur.parent_id)
         keep.add(cur.parent_id)
         cur = byId.get(cur.parent_id)
       }
@@ -236,36 +258,33 @@ export default function InventoryPage() {
   }
 
   function recomputeParents(next: Record<string, boolean>) {
-    // walk upwards: parent checked if all children checked; parent unchecked if none; indeterminate computed at render time
-    const visited = new Set<string>()
-    function updateUp(id: string) {
+    // parent is checked if all children checked; indeterminate shown separately
+    const seen = new Set<string>()
+    function walkUp(id: string) {
       const loc = byId.get(id)
       if (!loc?.parent_id) return
       const parentId = loc.parent_id
-      if (visited.has(parentId)) return
-      visited.add(parentId)
+      if (seen.has(parentId)) return
+      seen.add(parentId)
 
       const kids = childrenByParent.get(parentId) ?? []
       const checkedCount = kids.filter(k => !!next[k.id]).length
-      if (checkedCount === kids.length && kids.length > 0) next[parentId] = true
-      else if (checkedCount === 0) next[parentId] = false
-      else next[parentId] = false // keep false; indeterminate will show in UI
 
-      updateUp(parentId)
+      if (kids.length > 0 && checkedCount === kids.length) next[parentId] = true
+      else if (checkedCount === 0) next[parentId] = false
+      else next[parentId] = false // indeterminate state rendered in UI
+
+      walkUp(parentId)
     }
-    for (const id of Object.keys(next)) updateUp(id)
+
+    for (const id of Object.keys(next)) walkUp(id)
   }
 
   function isIndeterminate(id: string) {
     const kids = childrenByParent.get(id) ?? []
     if (kids.length === 0) return false
-    let any = false
-    let all = true
-    for (const k of kids) {
-      const c = !!selected[k.id]
-      any = any || c
-      all = all && c
-    }
+    const any = kids.some(k => !!selected[k.id])
+    const all = kids.every(k => !!selected[k.id])
     return any && !all
   }
 
@@ -283,26 +302,37 @@ export default function InventoryPage() {
     [selected]
   )
 
-  const selectedDescendants = useMemo(() => {
-    // For each selected location, include all descendants. This makes parent selection show all child items.
+  // Include descendants with cycle protection (iterative)
+  const selectedWithDescendants = useMemo(() => {
     const out = new Set<string>()
-    function addDesc(id: string) {
+    const stack = [...selectedLocationIds]
+    const seen = new Set<string>()
+
+    while (stack.length) {
+      const id = stack.pop()!
+      if (seen.has(id)) continue
+      seen.add(id)
       out.add(id)
       const kids = childrenByParent.get(id) ?? []
-      for (const k of kids) addDesc(k.id)
+      for (const k of kids) stack.push(k.id)
     }
-    for (const id of selectedLocationIds) addDesc(id)
+
     return out
   }, [selectedLocationIds, childrenByParent])
 
   const filteredItems = useMemo(() => {
     if (selectedLocationIds.length === 0) return []
-    return items.filter(it => selectedDescendants.has(it.location_id))
-  }, [items, selectedLocationIds.length, selectedDescendants])
+    return items.filter(it => selectedWithDescendants.has(it.location_id))
+  }, [items, selectedLocationIds.length, selectedWithDescendants])
+
+  const categoryNameById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of categories) m.set(c.id, c.name)
+    return m
+  }, [categories])
 
   const primaryPhotoByItem = useMemo(() => {
     const map = new Map<string, string>()
-    // choose newest primary; fallback newest
     const grouped = new Map<string, PhotoRow[]>()
     for (const p of photos) {
       if (!grouped.has(p.item_id)) grouped.set(p.item_id, [])
@@ -315,19 +345,40 @@ export default function InventoryPage() {
     return map
   }, [photos])
 
-  const categoryNameById = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const c of categories) m.set(c.id, c.name)
-    return m
-  }, [categories])
+  // Flatten locations for rendering (non-recursive)
+  const displayRows: DisplayRow[] = useMemo(() => {
+    const out: DisplayRow[] = []
+    const roots = (childrenByParent.get(null) ?? []).slice()
+    const visited = new Set<string>()
 
-  async function openAddItem() {
-    // Require non-root location? You asked previously: no items at root level.
-    // Here: allow add anytime, but requires a specific location selection that is NOT a root? We enforce: must choose a child/sub-child.
-    setShowAdd(true)
-    setForm({ name: '', vendor: '', price: '', category_id: '' })
-    setAddLocationId('')
-  }
+    const stack: Array<{ id: string; depth: number }> = []
+    for (let i = roots.length - 1; i >= 0; i--) stack.push({ id: roots[i].id, depth: 0 })
+
+    while (stack.length) {
+      const { id, depth } = stack.pop()!
+      if (visited.has(id)) continue
+      visited.add(id)
+
+      if (filteredKeep && !filteredKeep.has(id)) continue
+
+      const loc = byId.get(id)
+      if (!loc) continue
+
+      const kids = childrenByParent.get(id) ?? []
+      const hasChildren = kids.length > 0
+      const isExpanded = expanded[id] ?? false
+      const agg = aggCountByLoc.get(id) ?? 0
+      const isCycle = cycleIds.includes(id)
+
+      out.push({ id, name: loc.name, depth, hasChildren, aggCount: agg, cycle: isCycle })
+
+      if (hasChildren && isExpanded) {
+        for (let i = kids.length - 1; i >= 0; i--) stack.push({ id: kids[i].id, depth: depth + 1 })
+      }
+    }
+
+    return out
+  }, [childrenByParent, byId, expanded, filteredKeep, aggCountByLoc, cycleIds])
 
   function isRootLocation(id: string) {
     const l = byId.get(id)
@@ -339,12 +390,14 @@ export default function InventoryPage() {
     const name = form.name.trim()
     if (!name) return alert('Name is required.')
     if (!addLocationId) return alert('Location is required.')
-    if (isRootLocation(addLocationId)) {
-      return alert('You can only add inventory items to child (non-root) locations.')
-    }
+    if (isRootLocation(addLocationId)) return alert('Items can only be added to child (non-root) locations.')
 
     const priceNum =
-      form.price.trim() === '' ? null : Number.isFinite(Number(form.price)) ? Number(form.price) : null
+      form.price.trim() === ''
+        ? null
+        : Number.isFinite(Number(form.price))
+          ? Number(form.price)
+          : null
 
     const { data, error } = await supabase
       .from('items')
@@ -363,22 +416,23 @@ export default function InventoryPage() {
 
     setItems(prev => [data as ItemRow, ...prev])
     setShowAdd(false)
+    setAddLocationId('')
+    setForm({ name: '', vendor: '', price: '', category_id: '' })
+  }
+
+  function clickAddPhotos(item: ItemRow) {
+    setPhotoTargetItem(item)
+    setTimeout(() => fileInputRef.current?.click(), 0)
   }
 
   async function uploadPhotosForItem(item: ItemRow, files: FileList) {
-    if (!propertyId) return
     const bucket = 'item-photos'
-    const uploadedUrls: string[] = []
-
     for (let i = 0; i < files.length; i++) {
       const f = files[i]
       const ext = (f.name.split('.').pop() || 'jpg').toLowerCase()
       const path = `${item.id}/${crypto.randomUUID()}.${ext}`
 
-      const up = await supabase.storage.from(bucket).upload(path, f, {
-        cacheControl: '3600',
-        upsert: false
-      })
+      const up = await supabase.storage.from(bucket).upload(path, f, { upsert: false })
       if (up.error) {
         alert(up.error.message)
         continue
@@ -386,136 +440,16 @@ export default function InventoryPage() {
 
       const pub = supabase.storage.from(bucket).getPublicUrl(path)
       const url = pub.data.publicUrl
-      uploadedUrls.push(url)
 
-      // Insert row
       const { data: inserted, error: insErr } = await supabase
         .from('item_photos')
-        .insert({
-          item_id: item.id,
-          url,
-          is_primary: false
-        })
+        .insert({ item_id: item.id, url, is_primary: false })
         .select('id, item_id, url, is_primary, created_at')
         .single()
 
-      if (insErr) {
-        alert(insErr.message)
-      } else if (inserted) {
-        setPhotos(prev => [inserted as PhotoRow, ...prev])
-      }
+      if (insErr) alert(insErr.message)
+      else if (inserted) setPhotos(prev => [inserted as PhotoRow, ...prev])
     }
-
-    // If item has no primary, set first uploaded as primary
-    const alreadyPrimary = photos.some(p => p.item_id === item.id && p.is_primary)
-    if (!alreadyPrimary && uploadedUrls.length > 0) {
-      const firstUrl = uploadedUrls[0]
-      const { data: row } = await supabase
-        .from('item_photos')
-        .select('id, item_id, url, is_primary, created_at')
-        .eq('item_id', item.id)
-        .eq('url', firstUrl)
-        .limit(1)
-        .maybeSingle()
-
-      if (row?.id) {
-        await supabase.from('item_photos').update({ is_primary: true }).eq('id', row.id)
-        setPhotos(prev =>
-          prev.map(p => (p.id === row.id ? { ...p, is_primary: true } : p))
-        )
-      }
-    }
-  }
-
-  function renderTree(parent: string | null, depth: number) {
-    const rows = childrenByParent.get(parent) ?? []
-    const out: any[] = []
-    for (const loc of rows) {
-      if (filteredIds && !filteredIds.has(loc.id)) continue
-
-      const kids = childrenByParent.get(loc.id) ?? []
-      const isExpanded = expanded[loc.id] ?? false
-      const checked = !!selected[loc.id]
-      const ind = isIndeterminate(loc.id)
-      const agg = aggregateCountByLocation.get(loc.id) ?? 0
-
-      out.push(
-        <div key={loc.id} className="relative">
-          <div
-            className={cx(
-              'group flex items-center gap-2 rounded-lg border-l-4 px-3 py-2 mb-1',
-              depthColor(depth),
-              'hover:bg-indigo-50/60 transition-colors'
-            )}
-            style={{ marginLeft: depth * 14 }}
-            title="Select one or more locations to view inventory below."
-          >
-            <button
-              type="button"
-              className={cx(
-                'h-7 w-7 flex items-center justify-center rounded-md',
-                kids.length ? 'hover:bg-slate-200/70' : 'opacity-30 cursor-default'
-              )}
-              onClick={() => kids.length && toggleExpand(loc.id)}
-              aria-label={kids.length ? (isExpanded ? 'Collapse' : 'Expand') : 'No children'}
-            >
-              {kids.length ? (isExpanded ? '▾' : '▸') : '•'}
-            </button>
-
-            <input
-              type="checkbox"
-              checked={checked}
-              ref={(el) => {
-                if (el) el.indeterminate = ind
-              }}
-              onChange={(e) => onToggleCheck(loc.id, e.target.checked)}
-            />
-
-            <div className="flex-1 min-w-0">
-              <div className="font-medium text-slate-900 truncate">
-                {loc.name} <span className="text-slate-500 font-normal">({agg})</span>
-              </div>
-              <div className="text-xs text-slate-500">
-                {loc.parent_id ? 'Child location' : 'Root location'}
-              </div>
-            </div>
-          </div>
-
-          {depth > 0 && (
-            <div
-              className="absolute left-1 top-0 bottom-0 w-px bg-slate-200"
-              style={{ marginLeft: depth * 14 }}
-              aria-hidden
-            />
-          )}
-
-          {kids.length > 0 && isExpanded && (
-            <div className="pl-2">{renderTree(loc.id, depth + 1)}</div>
-          )}
-        </div>
-      )
-    }
-    return out
-  }
-
-  const locationOptions = useMemo(() => {
-    // Flatten list with indentation for add modal
-    const out: Array<{ id: string; label: string; isRoot: boolean }> = []
-    function walk(parent: string | null, depth: number) {
-      const rows = childrenByParent.get(parent) ?? []
-      for (const r of rows) {
-        out.push({ id: r.id, label: `${'— '.repeat(depth)}${r.name}`, isRoot: r.parent_id === null })
-        walk(r.id, depth + 1)
-      }
-    }
-    walk(null, 0)
-    return out
-  }, [childrenByParent])
-
-  function clickAddPhotos(item: ItemRow) {
-    setPhotoTargetItem(item)
-    // trigger picker
-    setTimeout(() => fileInputRef.current?.click(), 0)
   }
 
   async function onFilesChosen(e: React.ChangeEvent<HTMLInputElement>) {
@@ -524,11 +458,14 @@ export default function InventoryPage() {
     if (!photoTargetItem) return
 
     await uploadPhotosForItem(photoTargetItem, files)
-
-    // reset input
     e.target.value = ''
     setPhotoTargetItem(null)
   }
+
+  const locationOptions = useMemo(() => {
+    // show a simple flat list (no recursion) for dropdown
+    return locations.slice().sort((a, b) => a.name.localeCompare(b.name))
+  }, [locations])
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-10">
@@ -536,8 +473,13 @@ export default function InventoryPage() {
         <div>
           <h1 className="text-3xl font-bold text-slate-900">Inventory</h1>
           <p className="text-slate-600 mt-1">
-            Select one or more locations to view inventory. Parent selection includes all sub-locations.
+            Select one or more locations to display items below. Parent selection includes descendants.
           </p>
+          {cycleIds.length > 0 && (
+            <div className="mt-2 text-sm text-red-700">
+              Warning: Detected a cycle in locations. UI is protected, but please fix the hierarchy.
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-3">
@@ -549,14 +491,13 @@ export default function InventoryPage() {
           />
           <button
             className="rounded-xl bg-indigo-600 text-white px-4 py-2 font-medium hover:bg-indigo-700"
-            onClick={openAddItem}
+            onClick={() => setShowAdd(true)}
           >
             + Add New Item
           </button>
         </div>
       </div>
 
-      {/* file picker */}
       <input
         ref={fileInputRef}
         type="file"
@@ -568,9 +509,7 @@ export default function InventoryPage() {
 
       <div className="mt-8 rounded-2xl bg-white shadow-sm border p-5">
         <div className="text-lg font-bold text-slate-900">Locations</div>
-        <div className="text-sm text-slate-600 mt-1">
-          Pick locations to show items below.
-        </div>
+        <div className="text-sm text-slate-600 mt-1">Pick locations to show items below.</div>
 
         <div className="mt-4">
           {loading ? (
@@ -580,21 +519,64 @@ export default function InventoryPage() {
           ) : locations.length === 0 ? (
             <div className="text-slate-600">No locations yet. Create them in the Locations tab.</div>
           ) : (
-            <div>{renderTree(null, 0)}</div>
+            <div className="space-y-1">
+              {displayRows.map(r => {
+                const checked = !!selected[r.id]
+                const ind = isIndeterminate(r.id)
+                const isExpanded = expanded[r.id] ?? false
+
+                return (
+                  <div
+                    key={r.id}
+                    className={cx(
+                      'flex items-center gap-2 rounded-lg border-l-4 px-3 py-2',
+                      depthStyle(r.depth),
+                      r.cycle ? 'ring-1 ring-red-200' : '',
+                      'hover:bg-indigo-50/60 transition-colors'
+                    )}
+                    style={{ marginLeft: r.depth * 14 }}
+                  >
+                    <button
+                      type="button"
+                      className={cx(
+                        'h-7 w-7 flex items-center justify-center rounded-md',
+                        r.hasChildren ? 'hover:bg-slate-200/70' : 'opacity-30 cursor-default'
+                      )}
+                      onClick={() => r.hasChildren && toggleExpand(r.id)}
+                    >
+                      {r.hasChildren ? (isExpanded ? '▾' : '▸') : '•'}
+                    </button>
+
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      ref={(el) => {
+                        if (el) el.indeterminate = ind
+                      }}
+                      onChange={(e) => onToggleCheck(r.id, e.target.checked)}
+                    />
+
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-slate-900 truncate">
+                        {r.name}{' '}
+                        <span className="text-slate-500 font-normal">({r.aggCount})</span>
+                        {r.cycle && <span className="ml-2 text-xs text-red-700">cycle</span>}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           )}
         </div>
       </div>
 
       <div className="mt-8 rounded-2xl bg-white shadow-sm border p-5">
-        <div className="flex items-start justify-between gap-6">
-          <div>
-            <div className="text-lg font-bold text-slate-900">Items</div>
-            <div className="text-sm text-slate-600 mt-1">
-              {selectedLocationIds.length === 0
-                ? 'Select one or more locations to view items.'
-                : `${filteredItems.length} item(s) shown.`}
-            </div>
-          </div>
+        <div className="text-lg font-bold text-slate-900">Items</div>
+        <div className="text-sm text-slate-600 mt-1">
+          {selectedLocationIds.length === 0
+            ? 'Select one or more locations to view items.'
+            : `${filteredItems.length} item(s) shown.`}
         </div>
 
         {selectedLocationIds.length === 0 ? (
@@ -605,49 +587,36 @@ export default function InventoryPage() {
           <div className="mt-5 grid grid-cols-1 gap-3">
             {filteredItems.map(item => {
               const photoUrl = primaryPhotoByItem.get(item.id)
-              const categoryName = item.category_id ? categoryNameById.get(item.category_id) : null
+              const catName = item.category_id ? categoryNameById.get(item.category_id) : null
 
               return (
                 <div
                   key={item.id}
                   className="flex items-center gap-4 rounded-2xl border bg-white p-4 hover:bg-slate-50 transition-colors"
-                  title="Click image to add photos"
                 >
-                  {/* thumbnail */}
                   <button
                     className="relative h-16 w-16 rounded-xl overflow-hidden border bg-slate-100 shrink-0"
                     onClick={() => clickAddPhotos(item)}
+                    title="Click to add photo(s)"
                   >
                     {photoUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={photoUrl}
-                        alt="Item"
-                        className="h-full w-full object-cover"
-                      />
+                      <img src={photoUrl} alt="Item" className="h-full w-full object-cover" />
                     ) : (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src="/no-image.jpg"
-                        alt="No Image"
-                        className="h-full w-full object-cover"
-                      />
+                      <img src="/no-image.jpg" alt="No Image" className="h-full w-full object-cover" />
                     )}
                     <div className="absolute inset-0 opacity-0 hover:opacity-100 transition-opacity bg-black/30 flex items-center justify-center">
                       <div className="text-white text-xs font-medium">Click to Add Photo</div>
                     </div>
                   </button>
 
-                  {/* details */}
                   <div className="flex-1 min-w-0">
                     <div className="font-semibold text-slate-900 truncate">{item.name}</div>
                     <div className="text-sm text-slate-600 mt-0.5">
-                      <div><span className="font-medium">Category:</span> {categoryName ?? '—'}</div>
+                      <div><span className="font-medium">Category:</span> {catName ?? '—'}</div>
                       <div><span className="font-medium">Vendor:</span> {item.vendor ?? '—'}</div>
-                      <div>
-                        <span className="font-medium">Price:</span>{' '}
-                        {typeof item.price === 'number' ? `$${item.price.toFixed(2)}` : '—'}
-                      </div>
+                      <div><span className="font-medium">Price:</span> {typeof item.price === 'number' ? `$${item.price.toFixed(2)}` : '—'}</div>
                     </div>
                   </div>
                 </div>
@@ -657,21 +626,16 @@ export default function InventoryPage() {
         )}
       </div>
 
-      {/* Add item modal */}
+      {/* Add Item Modal */}
       {showAdd && (
         <div className="fixed inset-0 z-40 bg-black/30 flex items-center justify-center px-4">
           <div className="w-full max-w-xl rounded-2xl bg-white shadow-xl border p-6">
             <div className="flex items-start justify-between">
               <div>
                 <div className="text-xl font-bold text-slate-900">Add New Item</div>
-                <div className="text-slate-600 text-sm mt-1">
-                  Items can only be added to <span className="font-medium">child (non-root)</span> locations.
-                </div>
+                <div className="text-slate-600 text-sm mt-1">Items can only be added to child (non-root) locations.</div>
               </div>
-              <button
-                className="rounded-lg border px-3 py-1 hover:bg-slate-50"
-                onClick={() => setShowAdd(false)}
-              >
+              <button className="rounded-lg border px-3 py-1 hover:bg-slate-50" onClick={() => setShowAdd(false)}>
                 Close
               </button>
             </div>
@@ -685,9 +649,9 @@ export default function InventoryPage() {
                   onChange={(e) => setAddLocationId(e.target.value)}
                 >
                   <option value="">Select a location…</option>
-                  {locationOptions.map(o => (
-                    <option key={o.id} value={o.id}>
-                      {o.label}{o.isRoot ? ' (root)' : ''}
+                  {locationOptions.map(l => (
+                    <option key={l.id} value={l.id}>
+                      {l.name}{l.parent_id === null ? ' (root)' : ''}
                     </option>
                   ))}
                 </select>
@@ -713,7 +677,6 @@ export default function InventoryPage() {
                     onChange={(e) => setForm(prev => ({ ...prev, vendor: e.target.value }))}
                   />
                 </div>
-
                 <div>
                   <label className="text-sm font-medium text-slate-700">Price</label>
                   <input
@@ -723,7 +686,6 @@ export default function InventoryPage() {
                     onChange={(e) => setForm(prev => ({ ...prev, price: e.target.value }))}
                   />
                 </div>
-
                 <div>
                   <label className="text-sm font-medium text-slate-700">Category</label>
                   <select
@@ -733,32 +695,23 @@ export default function InventoryPage() {
                   >
                     <option value="">—</option>
                     {categories.map(c => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
+                      <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
                   </select>
                 </div>
               </div>
 
-              <div className="flex justify-between items-center pt-2">
-                <div className="text-xs text-slate-500">
-                  Photos are added after creation by clicking the thumbnail on the item card.
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    className="rounded-xl border px-4 py-2 hover:bg-slate-50"
-                    onClick={() => setShowAdd(false)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="rounded-xl bg-indigo-600 text-white px-4 py-2 font-medium hover:bg-indigo-700"
-                    onClick={createItem}
-                  >
-                    Create
-                  </button>
-                </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button className="rounded-xl border px-4 py-2 hover:bg-slate-50" onClick={() => setShowAdd(false)}>
+                  Cancel
+                </button>
+                <button className="rounded-xl bg-indigo-600 text-white px-4 py-2 font-medium hover:bg-indigo-700" onClick={createItem}>
+                  Create
+                </button>
+              </div>
+
+              <div className="text-xs text-slate-500">
+                Add photos after creation by clicking the thumbnail on the item card.
               </div>
             </div>
           </div>
