@@ -3,17 +3,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import imageCompression from 'browser-image-compression'
 import { supabaseBrowser } from '@/lib/supabase-browser'
 
 type LocationRow = {
   id: string
   name: string
   parent_id: string | null
-}
-
-type CategoryRow = {
-  id: string
-  name: string
 }
 
 type ItemRow = {
@@ -26,17 +22,6 @@ type ItemRow = {
   vendor: string | null
   notes: string | null
   photo_url: string | null
-
-  purchase_date: string | null
-  warranty_expires_on: string | null
-  depreciation_method: string | null
-  useful_life_months: number | null
-  salvage_value: number | null
-}
-
-function safeCsv(v: any) {
-  const s = String(v ?? '')
-  return `"${s.replace(/"/g, '""')}"`
 }
 
 export default function InventoryPage() {
@@ -45,13 +30,9 @@ export default function InventoryPage() {
 
   const [property, setProperty] = useState<any>(null)
   const [locations, setLocations] = useState<LocationRow[]>([])
-  const [categories, setCategories] = useState<CategoryRow[]>([])
   const [items, setItems] = useState<ItemRow[]>([])
   const [selectedLocations, setSelectedLocations] = useState<string[]>([])
-  const [selectedItems, setSelectedItems] = useState<string[]>([])
-  const [layout, setLayout] = useState<'grid' | 'table'>('grid')
-  const [sortBy, setSortBy] = useState<'name' | 'price' | 'vendor'>('name')
-  const [editingItem, setEditingItem] = useState<ItemRow | null>(null)
+  const [uploadingId, setUploadingId] = useState<string | null>(null)
 
   useEffect(() => {
     const init = async () => {
@@ -77,14 +58,6 @@ export default function InventoryPage() {
 
       setLocations(locs ?? [])
 
-      const { data: cats } = await supabase
-        .from('categories')
-        .select('*')
-        .eq('property_id', prop.id)
-        .order('name')
-
-      setCategories(cats ?? [])
-
       const { data: its } = await supabase
         .from('items')
         .select('*')
@@ -101,106 +74,78 @@ export default function InventoryPage() {
     [locations]
   )
 
-  const locationCounts = useMemo(() => {
-    const counts: Record<string, number> = {}
-    items.forEach(i => {
-      if (!i.location_id) return
-      counts[i.location_id] = (counts[i.location_id] ?? 0) + 1
-    })
-    return counts
-  }, [items])
-
   const toggleLocation = (id: string) => {
     setSelectedLocations(prev =>
       prev.includes(id)
         ? prev.filter(x => x !== id)
         : [...prev, id]
     )
-    setSelectedItems([])
   }
 
   const filteredItems = useMemo(() => {
     if (selectedLocations.length === 0) return []
-
-    let result = items.filter(
+    return items.filter(
       i => i.location_id && selectedLocations.includes(i.location_id)
     )
+  }, [items, selectedLocations])
 
-    result = result.sort((a, b) => {
-      if (sortBy === 'name')
-        return a.name.localeCompare(b.name)
-      if (sortBy === 'vendor')
-        return (a.vendor ?? '').localeCompare(b.vendor ?? '')
-      if (sortBy === 'price')
-        return (a.purchase_price ?? 0) - (b.purchase_price ?? 0)
-      return 0
-    })
+  // ===== IMAGE UPLOAD (DRAG + CLICK + COMPRESSION) =====
 
-    return result
-  }, [items, selectedLocations, sortBy])
+  const handleUpload = async (
+    itemId: string,
+    file: File
+  ) => {
+    try {
+      setUploadingId(itemId)
 
-  const totalPrice = useMemo(
-    () =>
-      filteredItems.reduce(
-        (sum, item) => sum + (item.purchase_price ?? 0),
-        0
-      ),
-    [filteredItems]
-  )
+      // compress before upload
+      const compressedFile = await imageCompression(file, {
+        maxSizeMB: 1,
+        maxWidthOrHeight: 1200,
+        useWebWorker: true,
+      })
 
-  const toggleItem = (id: string) => {
-    setSelectedItems(prev =>
-      prev.includes(id)
-        ? prev.filter(x => x !== id)
-        : [...prev, id]
-    )
-  }
+      const filePath = `${itemId}-${Date.now()}.jpg`
 
-  const deleteSingle = async (id: string) => {
-    if (!confirm('Delete this item?')) return
-    await supabase.from('items').delete().eq('id', id)
-    setItems(prev => prev.filter(i => i.id !== id))
-  }
+      const { error: uploadError } = await supabase.storage
+        .from('item-photos')
+        .upload(filePath, compressedFile, {
+          contentType: 'image/jpeg',
+        })
 
-  const exportCsv = () => {
-    if (selectedLocations.length === 0) {
-      alert('Select one or more locations first.')
-      return
+      if (uploadError) throw uploadError
+
+      const { data } = supabase.storage
+        .from('item-photos')
+        .getPublicUrl(filePath)
+
+      await supabase
+        .from('items')
+        .update({ photo_url: data.publicUrl })
+        .eq('id', itemId)
+
+      setItems(prev =>
+        prev.map(i =>
+          i.id === itemId
+            ? { ...i, photo_url: data.publicUrl }
+            : i
+        )
+      )
+    } catch (err) {
+      alert('Upload failed.')
+    } finally {
+      setUploadingId(null)
     }
+  }
 
-    const headers = [
-      'name',
-      'category',
-      'vendor',
-      'purchase_price',
-      'purchase_date',
-      'warranty_expires_on'
-    ]
-
-    const rows = filteredItems.map(i => [
-      i.name,
-      i.category ?? '',
-      i.vendor ?? '',
-      i.purchase_price ?? '',
-      i.purchase_date ?? '',
-      i.warranty_expires_on ?? ''
-    ])
-
-    const csv =
-      headers.map(safeCsv).join(',') +
-      '\n' +
-      rows.map(r => r.map(safeCsv).join(',')).join('\n')
-
-    const blob = new Blob([csv], {
-      type: 'text/csv;charset=utf-8;'
-    })
-
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `inventory_${new Date().toISOString().slice(0, 10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+  const handleDrop = (
+    e: React.DragEvent,
+    itemId: string
+  ) => {
+    e.preventDefault()
+    if (e.dataTransfer.files.length > 0) {
+      handleUpload(itemId, e.dataTransfer.files[0])
+    }
   }
 
   if (!property)
@@ -215,7 +160,7 @@ export default function InventoryPage() {
           Inventory
         </h1>
 
-        <div className="flex flex-wrap gap-2 mb-4">
+        <div className="flex gap-2 flex-wrap">
           {validLocations.map(l => (
             <button
               key={l.id}
@@ -227,136 +172,86 @@ export default function InventoryPage() {
               }`}
             >
               {l.name}
-              <span className="ml-2 text-xs bg-slate-200 px-2 py-0.5 rounded">
-                {locationCounts[l.id] ?? 0}
-              </span>
             </button>
           ))}
         </div>
-
-        {selectedLocations.length > 0 && (
-          <div className="flex justify-between items-center">
-            <div>
-              Total Value: $
-              {totalPrice.toFixed(2)}
-            </div>
-
-            <div className="flex gap-2">
-              <button
-                onClick={exportCsv}
-                className="border px-3 py-1 rounded bg-white"
-              >
-                Export CSV
-              </button>
-
-              <button
-                onClick={() =>
-                  setLayout(
-                    layout === 'grid'
-                      ? 'table'
-                      : 'grid'
-                  )
-                }
-                className="border px-3 py-1 rounded bg-white"
-              >
-                {layout === 'grid'
-                  ? 'Table View'
-                  : 'Grid View'}
-              </button>
-            </div>
-          </div>
-        )}
       </div>
 
       {selectedLocations.length === 0 ? (
         <div className="text-center text-slate-500">
           Select location(s) to view items.
         </div>
-      ) : layout === 'grid' ? (
-        <div className="grid gap-4 md:grid-cols-3">
+      ) : (
+        <div className="grid gap-6 md:grid-cols-3">
           {filteredItems.map(item => (
             <div
               key={item.id}
-              className="bg-white p-4 rounded-xl shadow-md"
+              className="bg-white rounded-xl shadow-md p-4"
             >
-              <button
+              <div
+                className="relative w-full h-48 rounded-lg overflow-hidden border bg-slate-100 cursor-pointer group transition-all duration-200 hover:shadow-lg"
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => handleDrop(e, item.id)}
                 onClick={() =>
-                  setEditingItem(item)
+                  document
+                    .getElementById(`file-${item.id}`)
+                    ?.click()
                 }
-                className="w-20 h-20 rounded overflow-hidden border bg-slate-100 hover:ring-2 hover:ring-indigo-500 transition mb-3"
               >
                 {item.photo_url ? (
                   <img
                     src={item.photo_url}
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                   />
                 ) : (
                   <img
                     src="/no-image.jpg"
-                    className="w-full h-full object-contain p-2 opacity-60"
+                    className="w-full h-full object-contain p-6 opacity-50"
                   />
                 )}
-              </button>
 
-              <div className="font-semibold">
+                {/* Hover Overlay */}
+                <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition duration-200 flex items-center justify-center">
+                  <span className="text-white opacity-0 group-hover:opacity-100 transition text-sm font-medium">
+                    Click or Drop Photo
+                  </span>
+                </div>
+
+                {/* Camera Badge */}
+                <div className="absolute top-2 right-2 bg-indigo-600 text-white text-xs px-2 py-1 rounded-full shadow">
+                  📷
+                </div>
+
+                {uploadingId === item.id && (
+                  <div className="absolute inset-0 bg-white bg-opacity-70 flex items-center justify-center text-sm font-medium">
+                    Uploading...
+                  </div>
+                )}
+              </div>
+
+              <input
+                id={`file-${item.id}`}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={e => {
+                  if (e.target.files?.[0]) {
+                    handleUpload(
+                      item.id,
+                      e.target.files[0]
+                    )
+                  }
+                }}
+              />
+
+              <div className="mt-3 font-semibold">
                 {item.name}
               </div>
               <div className="text-sm text-slate-600">
                 {item.category}
               </div>
-
-              <div className="flex justify-between mt-3 text-sm">
-                <button
-                  onClick={() =>
-                    deleteSingle(item.id)
-                  }
-                  className="text-red-600"
-                >
-                  Delete
-                </button>
-              </div>
             </div>
           ))}
-        </div>
-      ) : (
-        <div className="bg-white rounded-xl shadow-md">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-100">
-              <tr>
-                <th>Name</th>
-                <th>Category</th>
-                <th>Vendor</th>
-                <th>Price</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredItems.map(item => (
-                <tr
-                  key={item.id}
-                  className="border-t"
-                >
-                  <td>{item.name}</td>
-                  <td>{item.category}</td>
-                  <td>{item.vendor}</td>
-                  <td>
-                    $
-                    {item.purchase_price ?? 0}
-                  </td>
-                  <td>
-                    <button
-                      onClick={() =>
-                        setEditingItem(item)
-                      }
-                      className="text-indigo-600"
-                    >
-                      Edit
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       )}
     </main>
@@ -366,21 +261,15 @@ export default function InventoryPage() {
 function TopNav() {
   return (
     <div className="flex gap-4 mb-6">
-      <Link href="/dashboard">
-        Locations
-      </Link>
+      <Link href="/dashboard">Locations</Link>
       <Link
         href="/inventory"
         className="font-semibold"
       >
         Inventory
       </Link>
-      <Link href="/analytics">
-        Analytics
-      </Link>
-      <Link href="/settings">
-        Settings
-      </Link>
+      <Link href="/analytics">Analytics</Link>
+      <Link href="/settings">Settings</Link>
     </div>
   )
 }
