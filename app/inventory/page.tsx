@@ -56,6 +56,7 @@ export default function InventoryPage() {
       setDebug('Initializing…')
 
       const { data: userData, error: userErr } = await supabase.auth.getUser()
+      setDebug(prev => `${prev}\nUser ID: ${userData?.user?.id ?? 'NULL'}`)
       if (userErr) setDebug(`auth.getUser error: ${userErr.message}`)
       if (!userData?.user) {
         router.push('/')
