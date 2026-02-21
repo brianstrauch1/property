@@ -31,25 +31,25 @@ export default function SettingsPage() {
     setError(null)
 
     try {
-      const sessionResult = await supabase.auth.getSession()
-      if (sessionResult.error) throw sessionResult.error
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.getSession()
 
-      const session = sessionResult.data.session
+      if (sessionError) throw sessionError
+      const session = sessionData.session
       if (!session?.user) return
 
       const userId = session.user.id
 
-      // 🔹 Get membership safely typed
-      const membershipResult = await supabase
+      const { data: membershipData, error: memErr } = await supabase
         .from('property_members')
         .select('property_id')
         .eq('user_id', userId)
         .limit(1)
 
-      if (membershipResult.error) throw membershipResult.error
+      if (memErr) throw memErr
 
       const membership =
-        membershipResult.data as PropertyMember[] | null
+        membershipData as PropertyMember[] | null
 
       const propertyId =
         membership && membership.length > 0
@@ -58,18 +58,17 @@ export default function SettingsPage() {
 
       if (!propertyId) return
 
-      // 🔹 Get property WITHOUT using .single()
-      const propertyResult = await supabase
+      const { data: propData, error: propErr } = await supabase
         .from('properties')
         .select('id, name, address')
         .eq('id', propertyId)
         .limit(1)
 
-      if (propertyResult.error) throw propertyResult.error
+      if (propErr) throw propErr
 
       const prop =
-        propertyResult.data && propertyResult.data.length > 0
-          ? (propertyResult.data[0] as PropertyRow)
+        propData && propData.length > 0
+          ? (propData[0] as PropertyRow)
           : null
 
       if (!prop?.id) return
@@ -88,12 +87,14 @@ export default function SettingsPage() {
   async function save() {
     if (!property) return
 
+    const updatePayload: Partial<PropertyRow> = {
+      name: propName,
+      address: propAddress
+    }
+
     const { error } = await supabase
       .from('properties')
-      .update({
-        name: propName,
-        address: propAddress
-      })
+      .update(updatePayload as any)   // 🔥 explicit override
       .eq('id', property.id)
 
     if (error) {
