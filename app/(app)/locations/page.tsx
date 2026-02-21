@@ -9,15 +9,9 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
-  closestCenter
+  closestCenter,
+  useDroppable
 } from '@dnd-kit/core'
-import {
-  SortableContext,
-  useSortable,
-  verticalListSortingStrategy,
-  arrayMove
-} from '@dnd-kit/sortable'
-import { CSS } from '@dnd-kit/utilities'
 
 type LocationRow = {
   id: string
